@@ -1,0 +1,80 @@
+import torch
+import os
+import numpy as np
+import math
+from utils.CornerPDB import State
+import pickle
+
+
+def swap(array,pos1,pos2):
+	array[pos1], array[pos2] = array[pos2], array[pos1]
+	return array
+
+def unrank(hash,dual,distinctSize=8,puzzle_size=8):
+	
+	for i in range(puzzle_size):
+		dual[i]=i
+	
+	for i in range(distinctSize):
+		dual=swap(dual,i,int(i+hash%(puzzle_size-i)))
+		hash = hash/(puzzle_size-i)
+	
+	return dual
+
+
+
+def get_state(hash,corner_size=8):
+	state=State()
+	factorial=40320
+	dual=[-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+
+	hash_val=hash
+	hash=hash//factorial
+	hash_val=hash_val%factorial
+	
+	dual=unrank(hash_val,dual)
+
+	# set location of cubes
+	for i in range(8):
+		state.loc[dual[i]]=i
+	
+	# set orientation of cubes
+	cnt=0
+	limit=min(corner_size,7)
+	for i in range(limit-1, -1, -1) :
+		state.orientation[i]=hash%3
+		cnt+=hash%3
+		hash=hash//3 
+	if corner_size==8:
+		state.orientation[-1]=(3-(cnt%3))%3
+	
+	return state
+    	
+
+
+def readPDB(name):
+	
+	if not os.path.exists('pdbs/'+name+"/preprocessed"):	
+		dataset = []
+		filename="pdbs/"+name+"/"+name+".pdb"
+		with open(filename, "rb") as f:
+			byte=f.read(1)
+			depth = int.from_bytes(byte, "big")
+			index=0
+			while byte:
+				first_part=depth//16
+				second_part=depth%16 
+				dataset.append([first_part,index])
+				dataset.append([second_part,index+1])
+				byte=f.read(1)
+				depth = int.from_bytes(byte, "big")
+				index+=2
+		
+		with open('pdbs/'+name+"/preprocessed", 'wb') as f:
+			pickle.dump(dataset, f)
+	
+	# open the dataset
+	with open('pdbs/'+name+"/preprocessed", 'rb') as f:
+		return pickle.load(f)
+
+	
