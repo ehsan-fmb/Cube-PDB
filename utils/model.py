@@ -9,13 +9,9 @@ class CustomLoss(nn.Module):
         self.lambda_value = lambda_value
         self.num_classes=num_classes
 
-    def assgin_weights(self,probs,split):
+    def assgin_weights(self,probs):
         
-        if split=="lower":
-            weights = [(torch.tensor(len(prob))-torch.arange(len(prob))) for prob in probs]
-            weights = [(weight/self.num_classes) for weight in weights]
-        elif split=="higher":
-            weights=[torch.ones_like(prob) for prob in probs]
+        weights = [(torch.arange(1,len(prob)+1))/self.num_classes for prob in probs]
         
         return weights
 
@@ -25,23 +21,22 @@ class CustomLoss(nn.Module):
         ce_loss = nn.CrossEntropyLoss()(outputs, targets)
         
         # Convert targets to one-hot encoding and get the probs for classess
-        probs = torch.softmax(outputs, dim=1)
-
-        # split the probs in two parts: Underestimation and Overestimation (1-log-probs)
-        lower_log_probs = [torch.log(1-probs[i, :index.item()]) for i, index in enumerate(targets)]
-        higher_log_probs = [torch.log(1-probs[i, index.item() + 1:]) for i, index in enumerate(targets)]
-
-        # assign the weights
-        lower_weights=self.assgin_weights(lower_log_probs,split="lower")
-        higher_weights=self.assgin_weights(higher_log_probs,split="higher") 
-
-        # Calculate penalty term
-        under_loss=torch.mean(torch.stack([torch.sum(lower_weight*lower_log_prob,dim=0) for lower_weight,lower_log_prob in 
-                               zip(lower_weights,lower_log_probs)]))
-        over_loss=torch.mean(torch.stack([torch.sum(higher_weight*higher_log_prob,dim=0) for higher_weight,higher_log_prob in 
-                              zip(higher_weights,higher_log_probs)]))
+        probs = torch.softmax(outputs, dim=1)        
         
-        loss = ce_loss - self.lambda_value * (over_loss+under_loss)
+        # get overestimation log-probs
+        mask = torch.stack([(array > array[threshold]) for array, threshold in zip(probs, targets)])
+        over_probs = [array * m.float() for array, m in zip(probs, mask)]
+        over_log_probs=[torch.log(1-over_probs[i][index.item() + 1:]) for i,index in enumerate(targets)]
+
+        # get weights for overestimation probs  
+        over_weights=self.assgin_weights(over_log_probs)
+
+        #compute loss for overestimation
+        over_loss=torch.mean(torch.stack([torch.sum(over_weight*over_log_prob,dim=0) for over_weight,over_log_prob in 
+                              zip(over_weights,over_log_probs)]))
+
+        # compute total loss
+        loss=ce_loss-self.lambda_value*over_loss
         
         return loss
 

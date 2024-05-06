@@ -156,8 +156,8 @@ class State:
     # color all edge cubies black
     for i in range(6):
       
-      nn_input[i,1,1]=i 
-      nn_input[i,0,1]=nn_input[i,1,0]=nn_input[i,1,2]=nn_input[i,2,1]=i
+      # nn_input[i,1,1]=i 
+      # nn_input[i,0,1]=nn_input[i,1,0]=nn_input[i,1,2]=nn_input[i,2,1]=i
       
       nn_input_one_hot_encoded[7*i,1,1]=1
       nn_input_one_hot_encoded[7*i,0,1]=nn_input_one_hot_encoded[7*i,1,0]=nn_input_one_hot_encoded[7*i,1,2]=nn_input_one_hot_encoded[7*i,2,1]=1
@@ -166,72 +166,72 @@ class State:
     for i in range(len(self.loc)):
 
       if i==0:
-        nn_input[0,2,0]=self.getFaceColor(0)
-        nn_input[2,0,0]=self.getFaceColor(2)
-        nn_input[4,0,2]=self.getFaceColor(1)
+        # nn_input[0,2,0]=self.getFaceColor(0)
+        # nn_input[2,0,0]=self.getFaceColor(2)
+        # nn_input[4,0,2]=self.getFaceColor(1)
 
         nn_input_one_hot_encoded[self.getFaceColor(0),2,0]=1
         nn_input_one_hot_encoded[12+self.getFaceColor(2),0,0]=1
         nn_input_one_hot_encoded[24+self.getFaceColor(1),0,2]=1
 
       elif i==1:
-        nn_input[0,2,2]=self.getFaceColor(3)
-        nn_input[2,0,2]=self.getFaceColor(4)
-        nn_input[5,0,0]=self.getFaceColor(5)
+        # nn_input[0,2,2]=self.getFaceColor(3)
+        # nn_input[2,0,2]=self.getFaceColor(4)
+        # nn_input[5,0,0]=self.getFaceColor(5)
 
         nn_input_one_hot_encoded[self.getFaceColor(3),2,2]=1
         nn_input_one_hot_encoded[12+self.getFaceColor(4),0,2]=1
         nn_input_one_hot_encoded[30+self.getFaceColor(5),0,0]=1
 
       elif i==2:
-        nn_input[0,0,2]=self.getFaceColor(6)
-        nn_input[5,0,2]=self.getFaceColor(7)
-        nn_input[3,0,0]=self.getFaceColor(8)
+        # nn_input[0,0,2]=self.getFaceColor(6)
+        # nn_input[5,0,2]=self.getFaceColor(7)
+        # nn_input[3,0,0]=self.getFaceColor(8)
 
         nn_input_one_hot_encoded[self.getFaceColor(6),0,2]=1
         nn_input_one_hot_encoded[30+self.getFaceColor(7),0,2]=1
         nn_input_one_hot_encoded[18+self.getFaceColor(8),0,0]=1
 
       elif i==3:
-        nn_input[0,0,0]=self.getFaceColor(9)
-        nn_input[4,0,0]=self.getFaceColor(11)
-        nn_input[3,0,2]=self.getFaceColor(10)
+        # nn_input[0,0,0]=self.getFaceColor(9)
+        # nn_input[4,0,0]=self.getFaceColor(11)
+        # nn_input[3,0,2]=self.getFaceColor(10)
 
         nn_input_one_hot_encoded[self.getFaceColor(9),0,0]=1
         nn_input_one_hot_encoded[24+self.getFaceColor(11),0,0]=1
         nn_input_one_hot_encoded[18+self.getFaceColor(10),0,2]=1
 
       elif i==4:
-        nn_input[1,0,0]=self.getFaceColor(12)
-        nn_input[2,2,0]=self.getFaceColor(13)
-        nn_input[4,2,2]=self.getFaceColor(14)
+        # nn_input[1,0,0]=self.getFaceColor(12)
+        # nn_input[2,2,0]=self.getFaceColor(13)
+        # nn_input[4,2,2]=self.getFaceColor(14)
 
         nn_input_one_hot_encoded[6+self.getFaceColor(12),0,0]=1
         nn_input_one_hot_encoded[12+self.getFaceColor(13),2,0]=1
         nn_input_one_hot_encoded[24+self.getFaceColor(14),2,2]=1
 
       elif i==5:
-        nn_input[1,0,2]=self.getFaceColor(15)
-        nn_input[2,2,2]=self.getFaceColor(17)
-        nn_input[5,2,0]=self.getFaceColor(16)
+        # nn_input[1,0,2]=self.getFaceColor(15)
+        # nn_input[2,2,2]=self.getFaceColor(17)
+        # nn_input[5,2,0]=self.getFaceColor(16)
 
         nn_input_one_hot_encoded[6+self.getFaceColor(15),0,2]=1
         nn_input_one_hot_encoded[12+self.getFaceColor(17),2,2]=1
         nn_input_one_hot_encoded[30+self.getFaceColor(16),2,0]=1
 
       elif i==6:
-        nn_input[1,2,2]=self.getFaceColor(18)
-        nn_input[5,2,2]=self.getFaceColor(20)
-        nn_input[3,2,0]=self.getFaceColor(19)
+        # nn_input[1,2,2]=self.getFaceColor(18)
+        # nn_input[5,2,2]=self.getFaceColor(20)
+        # nn_input[3,2,0]=self.getFaceColor(19)
 
         nn_input_one_hot_encoded[6+self.getFaceColor(18),2,2]=1
         nn_input_one_hot_encoded[30+self.getFaceColor(20),2,2]=1
         nn_input_one_hot_encoded[18+self.getFaceColor(19),2,0]=1
 
       elif i==7:
-        nn_input[1,2,0]=self.getFaceColor(21)
-        nn_input[4,2,0]=self.getFaceColor(22)
-        nn_input[3,2,2]=self.getFaceColor(23)
+        # nn_input[1,2,0]=self.getFaceColor(21)
+        # nn_input[4,2,0]=self.getFaceColor(22)
+        # nn_input[3,2,2]=self.getFaceColor(23)
 
         nn_input_one_hot_encoded[6+self.getFaceColor(21),2,0]=1
         nn_input_one_hot_encoded[24+self.getFaceColor(22),2,0]=1

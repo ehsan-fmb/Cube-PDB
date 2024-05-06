@@ -12,18 +12,13 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 loss_lambda=1
 
 
-def test(dataset,model,test_size):
-    
-    # get the test batch
-    inputs,cost_to_go=make_batch(dataset,test_size)
-    inputs= torch.stack(inputs)
-    cost_to_go=torch.stack(cost_to_go,dim=0)
+def test(model,inputs,cost_to_go,test_size):
     
     # get the probs from model
     nn_output=model(inputs)
     probs = torch.softmax(nn_output, dim=1)
 
-    # picl the class from probs and calculte the overestimations
+    # pick the class from probs and calculte the overestimations
     classes=torch.argmax(probs,dim=1)    
     miss=torch.sum(cost_to_go<classes)
 
@@ -50,6 +45,23 @@ def make_batch(dataset,batch_size):
         inputs.append(torch.tensor(nn_input,device=device,dtype=torch.float32))
     
     return inputs,outputs
+
+def display_progress(miss,losses,pdb_name,last_epoch,interval):
+    
+    min_loss=min(losses)
+    max_loss=max(losses)
+    avg_loss=sum(losses)/len(losses)
+    
+    with open("models/"+pdb_name+"/"+'info.txt', 'a') as file:
+        file.write("*"*50+"\n")
+        file.write("Next interval: from "+str(last_epoch-interval)+" to "+str(last_epoch)+"\n")
+        file.write("min loss: "+str(min_loss)+"\n")
+        file.write("max loss: "+str(max_loss)+"\n")
+        file.write("average loss: "+str(avg_loss)+"\n")
+        file.write("inaccuracy:"+str(miss)+"\n")
+
+
+
 
 def update(dataset,model,batch_size,optimizer,criterion):
         
@@ -83,14 +95,18 @@ def run(model,target_model,dataset,learning_rate,epochs,batch_size,pdb_name,test
     criterion =CustomLoss(loss_lambda,model.out_dim)
     optimizer: Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    #first test
-    inaccuracy=test(dataset,model,test_size)
+    # Make the test batch and get the first inaccuracy
+    test_inputs,test_targets=make_batch(dataset,test_size)
+    test_inputs= torch.stack(test_inputs)
+    test_targets=torch.stack(test_targets,dim=0)
+    inaccuracy=test(model,test_inputs,test_targets,test_size)
     print("First test is done.")
 
     # copy model paramters to the target model 
     update_target(model,target_model,pdb_name)
 
     model.train()
+    losses=[]
     for i in range(epochs):
         
         # zero the parameter gradients
@@ -98,19 +114,23 @@ def run(model,target_model,dataset,learning_rate,epochs,batch_size,pdb_name,test
         
         # do update for a specific number of batches
         loss=update(dataset,model,batch_size,optimizer,criterion)
-        
-        # display progress
-        print("*"*40)
-        print("epoch: "+str(i+1))
-        print("average loss: "+ str(loss))
+        losses.append(loss)
 
         # update target model if model is improved
-        if (i+1)%test_interval==0:
-            new_inaccuracy=test(dataset,model,test_size)
+        if (i+1)%test_interval==0:    
+            
+            # get the new accuracy
+            new_inaccuracy=test(model,test_inputs,test_targets,test_size)
+            
+            # update the model if a better accuracy is found
             if new_inaccuracy<inaccuracy:
-                print("A new best model->")
                 inaccuracy=new_inaccuracy
                 update_target(model,target_model,pdb_name)
+            
+            # print information in the file
+            display_progress(inaccuracy,losses,pdb_name,(i+1),test_interval)
+            losses=[]
+
 
 
      
