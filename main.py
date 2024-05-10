@@ -2,8 +2,6 @@ from utils.dataloader import readPDB
 import argparse
 from utils.train import run
 from utils.model import ResnetModel
-import torch
-
 
 # NN layers
 fc_dim=5000
@@ -12,7 +10,6 @@ filter_size=2
 resnet_dim=1000
 resnet_blocks=4
 out_dim=16
-test_size=8e5
 test_interval=1e3
 
 
@@ -28,6 +25,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.train=="True":
+        
         # load the dataset
         dataset=readPDB(args.pdb_name)
         print("dataset is loaded.")
@@ -38,6 +36,6 @@ if __name__ == "__main__":
         
         # start training
         run(model,target_model,dataset,float(args.lr),int(float(args.epochs)),int(float(args.batch_size))
-            ,args.pdb_name,int(test_size),int(test_interval))
+            ,args.pdb_name,int(test_interval))
 
     

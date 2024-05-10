@@ -48,14 +48,16 @@ def get_state(hash,corner_size=8):
 	if corner_size==8:
 		state.orientation[-1]=(3-(cnt%3))%3
 	
-	return state
+	return state.get_nn_input()
     	
 
 
 def readPDB(name):
 	
-	if not os.path.exists('pdbs/'+name+"/preprocessed"):	
+	if not os.path.exists('pdbs/'+name+"/preprocessed.npy"):	
 		dataset = []
+		dist={}
+		avg=0
 		filename="pdbs/"+name+"/"+name+".pdb"
 		with open(filename, "rb") as f:
 			byte=f.read(1)
@@ -69,12 +71,37 @@ def readPDB(name):
 				byte=f.read(1)
 				depth = int.from_bytes(byte, "big")
 				index+=2
+
+				# add to the dist
+				if first_part not in dist:
+					dist[first_part]=0
+				else:
+					dist[first_part]+=1
+				if second_part not in dist:
+					dist[second_part]=0
+				else:
+					dist[second_part]+=1
+				
+				# compute average heuristic
+				avg=avg+first_part+second_part
 		
-		with open('pdbs/'+name+"/preprocessed", 'wb') as f:
-			pickle.dump(dataset, f)
+		# save the dataset as a numpy array
+		np_dataset=np.array(dataset)
+		np.save('pdbs/'+name+"/preprocessed.npy", np_dataset)
+		
+		with open("pdbs/"+name+"/"+'info.txt', 'a') as file:
+			file.write("*"*50+"\n")
+			file.write("average heuristic: "+str(avg/len(dataset))+"\n")
+			file.write("heuristic distribution: \n")
+			for key in dist: 
+				file.write("value: "+str(key)+"        number:  "+str(dist[key])+"\n")
+		
 	
 	# open the dataset
-	with open('pdbs/'+name+"/preprocessed", 'rb') as f:
-		return pickle.load(f)
+	dataset=np.load('pdbs/'+name+"/preprocessed.npy")
+	np.random.shuffle(dataset)
+
+	return dataset
+	
 
 	

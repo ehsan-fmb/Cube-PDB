@@ -3,17 +3,23 @@ import torch.nn as nn
 import torch.nn.functional as F 
 import sys
 
+
+# cpu or gpu
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 class CustomLoss(nn.Module):
     def __init__(self, lambda_value,num_classes):
         super(CustomLoss, self).__init__()
         self.lambda_value = lambda_value
         self.num_classes=num_classes
 
-    def assgin_weights(self,probs):
+    def assgin_weights(self,probs,targets):
         
-        weights = [(torch.arange(1,len(prob)+1))/self.num_classes for prob in probs]
+        position_difference = torch.arange(probs.size(1), device=device).unsqueeze(0) - targets.unsqueeze(1)
+        weights=torch.ones_like(probs,device=device)
+        weights = weights*position_difference
         
-        return weights
+        return weights/self.num_classes
 
 
     def forward(self, outputs, targets):
@@ -23,19 +29,24 @@ class CustomLoss(nn.Module):
         # Convert targets to one-hot encoding and get the probs for classess
         probs = torch.softmax(outputs, dim=1)        
         
-        # get overestimation log-probs
-        mask = torch.stack([(array > array[threshold]) for array, threshold in zip(probs, targets)])
-        over_probs = [array * m.float() for array, m in zip(probs, mask)]
-        over_log_probs=[torch.log(1-over_probs[i][index.item() + 1:]) for i,index in enumerate(targets)]
+        # get higher log-probs than true prob
+        true_probs=probs[torch.arange(probs.size(0)), targets]
+        true_expanded = true_probs.unsqueeze(1).expand(-1, probs.size(1))
+        mask = probs > true_expanded
+        higher__log_probs=torch.log(1-probs*mask)
 
-        # get weights for overestimation probs  
-        over_weights=self.assgin_weights(over_log_probs)
-
-        #compute loss for overestimation
-        over_loss=torch.mean(torch.stack([torch.sum(over_weight*over_log_prob,dim=0) for over_weight,over_log_prob in 
-                              zip(over_weights,over_log_probs)]))
+        # make all values zero before the true class
+        mask = torch.arange(higher__log_probs.size(1)).unsqueeze(0).to(device=device) > targets.unsqueeze(1)
+        over_log_probs = higher__log_probs * mask.int()
+        
+        # assign weights to each overestiamted class
+        weights=self.assgin_weights(over_log_probs,targets)
+        
+        # get weighted log-probs
+        w_over_log_probs=weights*over_log_probs
 
         # compute total loss
+        over_loss=torch.mean(torch.sum(w_over_log_probs,dim=1),dim=0)
         loss=ce_loss-self.lambda_value*over_loss
         
         return loss
