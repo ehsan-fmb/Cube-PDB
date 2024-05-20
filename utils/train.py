@@ -162,6 +162,9 @@ def update(dataset_1,dataset_2,model,batch_size,optimizer,criterion):
     # backwards
     loss.backward()
 
+    # Gradient clipping
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 3)
+    
     # step
     optimizer.step()
 
@@ -196,7 +199,7 @@ def run(model,dataset,learning_rate,epochs,batch_size,pdb_name,test_interval,acc
     # define loss, optimizer, and send model paramters to the device
     model.to(device)
     criterion =CustomLoss(loss_lambda,model.out_dim)
-    optimizer: Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer: Optimizer = optim.AdamW(model.parameters(), lr=learning_rate,weight_decay=1e-5)
     scheduler = StepLR(optimizer, step_size=100, gamma=0.9998)
     
     # define the validation set and write its information
@@ -207,8 +210,8 @@ def run(model,dataset,learning_rate,epochs,batch_size,pdb_name,test_interval,acc
     dataset_1,dataset_2=split_dataset(dataset)
     
     # get the first inaccuracy before training has started
-    inaccuracy=1
-    avg_heuristic=0
+    inaccuracy=torch.tensor(1,device=device)
+    avg_heuristic=torch.tensor(0,device=device)
     display_progress(inaccuracy,None,pdb_name,0,test_interval,avg_heuristic,None,None,true_average=true_average)
 
     # copy model paramters to the target model 
