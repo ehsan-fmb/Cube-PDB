@@ -1,13 +1,13 @@
 import torch
 import numpy as np
+import torch.amp
 import torch.optim as optim
 from torch.optim.optimizer import Optimizer
 from utils.dataloader import get_state
 from utils.model import CustomLoss
 from multiprocessing import Pool
-import time
+from torch.optim.lr_scheduler import StepLR
 import gc
-
 
 # cpu or gpu
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -15,8 +15,8 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # define these terms
 # lambda for second term of the loss
 # pool for multiprocessing
-# number of chunks for test
-chunk_num=1200
+# number samples for test
+chunk_num=100
 loss_lambda=1
 num_process=None
 pool = Pool(processes=num_process)
@@ -42,15 +42,35 @@ def calculate_overestimated_samples(model,samples):
     torch.cuda.empty_cache()
     gc.collect()
 
-    return miss
+    return miss,torch.sum(classes)
 
+def create_validation_set(dataset):
+    lower_than_7=dataset[dataset[:,0]<7]
+    rank_7=dataset[dataset[:,0]==7]
+    rank_8=dataset[dataset[:,0]==8]
+    rank_9=dataset[dataset[:,0]==9]
+    rank_10=dataset[dataset[:,0]==10]
+    rank_11=dataset[dataset[:,0]==11]
+
+    rank_7=rank_7[np.random.choice(rank_7.shape[0], size=int(25e4), replace=False)]
+    rank_8=rank_8[np.random.choice(rank_8.shape[0], size=int(5e5), replace=False)]
+    rank_9=rank_9[np.random.choice(rank_9.shape[0], size=int(5e5), replace=False)]
+    rank_10=rank_10[np.random.choice(rank_10.shape[0], size=int(5e5), replace=False)]
+    
+    validation_set=np.vstack((lower_than_7,rank_7,rank_8,rank_9,rank_10,rank_11))
+
+    return validation_set,np.sum(validation_set[:,0])/validation_set.shape[0]
 
 def test(model,dataset):
     
+    # turn on testing mode
+    model.eval()
+
     # slice the dataset to equal chunks
     sublist_length = len(dataset) // chunk_num
     remainder = len(dataset) % chunk_num
-    miss=0
+    total_miss=0
+    total_sum=0
 
     start_index = 0
     for i in range(chunk_num):
@@ -60,28 +80,34 @@ def test(model,dataset):
         samples=dataset[start_index:end_index+1,:]
 
         # get the overestimated samples for this chunk
-        miss+=calculate_overestimated_samples(model,samples)
+        miss,heuristic_sum=calculate_overestimated_samples(model,samples)
+        total_miss+=miss
+        total_sum+=heuristic_sum
 
         start_index = end_index + 1
 
-    return miss/len(dataset)
+    return total_miss/len(dataset),total_sum/len(dataset)
 
 
-def update_target(model,target,pdb_name):
-    for target_param, param in zip(target.parameters(), model.parameters()):
-        target_param.data.copy_(param.data)
-    
-    # save the target model
-    torch.save(target.state_dict(),"models/"+pdb_name+"/"+'model.pth')
+def update_target(model,pdb_name):
+
+    # save both original model
+    torch.save(model.state_dict(),"models/"+pdb_name+"/"+'model.pth')
 
 
-def make_batch(dataset=None,batch_size=None,test=False,test_samples=None):
+
+def make_batch(dataset=None,batch_size=None,test_samples=None):
     
     if test_samples is not None:
         samples=test_samples
     else:
-        start_index = np.random.randint(0, len(dataset) - batch_size + 1)
-        samples = dataset[start_index:start_index + batch_size,:]
+        batch_size_0=batch_size//10
+        batch_size_1=batch_size-batch_size_0
+        start_index_0 = np.random.randint(0, len(dataset[0]) - batch_size_0 + 1)
+        start_index_1=  np.random.randint(0, len(dataset[1]) - batch_size_1 + 1)
+        samples_0 = dataset[0][start_index_0:start_index_0 + batch_size_0,:]
+        samples_1 = dataset[1][start_index_1:start_index_1 + batch_size_1,:]
+        samples=np.vstack((samples_0,samples_1))
     
     # use multiprocessing for speed
     inputs = pool.map(get_state,(index[1] for index in samples))
@@ -95,29 +121,41 @@ def make_batch(dataset=None,batch_size=None,test=False,test_samples=None):
     
     return inputs,outputs
 
-def display_progress(miss,losses,pdb_name,last_epoch,interval):
+def display_progress(miss,losses,pdb_name,last_epoch,interval,average_heuristic,new_inaccuracy,new_average_heuristic,true_average=None):
     
-    min_loss=min(losses)
-    max_loss=max(losses)
-    avg_loss=sum(losses)/len(losses)
+    if losses:
+        min_loss=min(losses)
+        max_loss=max(losses)
+        avg_loss=sum(losses)/len(losses)
     
-    with open("models/"+pdb_name+"/"+'info.txt', 'a') as file:
-        file.write("*"*50+"\n")
-        file.write("Next interval: from "+str(last_epoch-interval)+" to "+str(last_epoch)+"\n")
-        file.write("min loss: "+str(min_loss)+"\n")
-        file.write("max loss: "+str(max_loss)+"\n")
-        file.write("average loss: "+str(avg_loss)+"\n")
-        file.write("inaccuracy:"+str(miss)+"\n")
+        with open("models/"+pdb_name+"/"+'info.txt', 'a') as file:
+            file.write("*"*50+"\n")
+            file.write("Next interval: from "+str(last_epoch-interval)+" to "+str(last_epoch)+"\n")
+            file.write("min loss: "+str(min_loss.item())+"\n")
+            file.write("max loss: "+str(max_loss.item())+"\n")
+            file.write("average loss: "+str(avg_loss.item())+"\n")
+            file.write("new inaccuracy: "+str(new_inaccuracy.item())+"\n")
+            file.write("new average heuristic: "+str(new_average_heuristic.item())+"\n")
+            file.write("final inaccuracy: "+str(miss.item())+"\n")
+            file.write("final average heuristic: "+str(average_heuristic.item())+"\n")
+
+    else:
+        with open("models/"+pdb_name+"/"+'info.txt', 'a') as file:
+            file.write("Before training: "+"\n")
+            file.write("inaccuracy: "+str(miss.item())+"\n")
+            file.write("average heuristic :"+str(average_heuristic.item())+"\n")
+            file.write("true average heuristic :"+str(true_average.item())+"\n")
 
 
-def update(dataset,model,batch_size,optimizer,criterion):
+
+def update(dataset_1,dataset_2,model,batch_size,optimizer,criterion):
         
     # get a uniformly random batch of data
-    inputs,cost_to_go=make_batch(dataset=dataset,batch_size=batch_size)
-
+    inputs,cost_to_go=make_batch(dataset=[dataset_1,dataset_2],batch_size=batch_size)
+    
     # forward to get nn outputs
     nn_probs=model(inputs)
-
+    
     #loss
     loss = criterion(nn_probs, cost_to_go)
 
@@ -137,30 +175,60 @@ def update(dataset,model,batch_size,optimizer,criterion):
     return loss
 
 
-def run(model,target_model,dataset,learning_rate,epochs,batch_size,pdb_name,test_interval):
+def compare_models(inaccuracy,new_inaccuracy,avg_heuristic,new_avg_heuristic,accuracy_threshold):
+    
+    if new_inaccuracy+accuracy_threshold<inaccuracy:
+        return True
+    if abs(new_inaccuracy-inaccuracy)<accuracy_threshold and new_avg_heuristic>avg_heuristic:
+        return True
+    return False
+
+
+def split_dataset(dataset):
+
+    lower_than8=dataset[dataset[:,0]<8]
+    dataset_rest=dataset[dataset[:,0]>=8]
+
+    return lower_than8,dataset_rest
+
+def run(model,dataset,learning_rate,epochs,batch_size,pdb_name,test_interval,accuracy_threshold,accuracy_decay):
     
     # define loss, optimizer, and send model paramters to the device
     model.to(device)
-    target_model.to(device)
     criterion =CustomLoss(loss_lambda,model.out_dim)
     optimizer: Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = StepLR(optimizer, step_size=100, gamma=0.9998)
     
-    # Make the test batch and get the first inaccuracy
+    # define the validation set and write its information
+    val_dataset,true_average=create_validation_set(dataset)
+    print("validation set is defined")
+
+    # split the dataset to two sections: lower than 8 and thre rest
+    dataset_1,dataset_2=split_dataset(dataset)
+    
+    # get the first inaccuracy before training has started
     inaccuracy=1
+    avg_heuristic=0
+    display_progress(inaccuracy,None,pdb_name,0,test_interval,avg_heuristic,None,None,true_average=true_average)
 
     # copy model paramters to the target model 
-    update_target(model,target_model,pdb_name)
-
-    model.train()
+    update_target(model,pdb_name)
+    
     losses=[]
     for i in range(epochs):
         
+        # turn on training mode
+        model.train()
+
         # zero the parameter gradients
         optimizer.zero_grad()
         
         # do update for a specific number of batches
-        loss=update(dataset,model,batch_size,optimizer,criterion)
+        loss=update(dataset_1,dataset_2,model,batch_size,optimizer,criterion)
         losses.append(loss)
+
+        # update the learning rate scheduler
+        scheduler.step()
 
         # update target model if model is improved
         if (i+1)%test_interval==0:    
@@ -168,15 +236,19 @@ def run(model,target_model,dataset,learning_rate,epochs,batch_size,pdb_name,test
             print("epoch: "+str(i+1))
 
             # get the new accuracy
-            new_inaccuracy=test(model,dataset)
+            new_inaccuracy,new_average_heuristic=test(model,val_dataset)
             
             # update the model if a better accuracy is found
-            if new_inaccuracy<inaccuracy:
+            if compare_models(inaccuracy,new_inaccuracy,avg_heuristic,new_average_heuristic,accuracy_threshold):
                 inaccuracy=new_inaccuracy
-                update_target(model,target_model,pdb_name)
+                avg_heuristic=new_average_heuristic
+                update_target(model,pdb_name)
+
+            # decay the accuracy threshold
+            accuracy_threshold=accuracy_threshold*accuracy_decay
             
             # print information in the file
-            display_progress(inaccuracy,losses,pdb_name,(i+1),test_interval)
+            display_progress(inaccuracy,losses,pdb_name,(i+1),test_interval,avg_heuristic,new_inaccuracy,new_average_heuristic)
             losses=[]
 
 

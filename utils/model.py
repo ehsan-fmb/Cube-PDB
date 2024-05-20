@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F 
-import sys
 
 
 # cpu or gpu
@@ -62,11 +61,10 @@ class ResnetModel(nn.Module):
         self.num_resnet_blocks: int = num_resnet_blocks
         self.batch_norm = batch_norm
         self.out_dim=out_dim
-
         
         # one convolutional layer
         self.conv1=nn.Conv2d(in_channels=36,out_channels=self.output_channels,kernel_size=kernel_size,stride=1)
-        
+        self.convbn=nn.BatchNorm2d(self.output_channels)
         
         height=(state_dim[0]-kernel_size)+1
         width=(state_dim[1]-kernel_size)+1
@@ -104,6 +102,7 @@ class ResnetModel(nn.Module):
 
         # convolutional layer
         x = self.conv1(x)
+        x = self.convbn(x)
         x = F.relu(x)
         
         # flatten the output
@@ -139,4 +138,5 @@ class ResnetModel(nn.Module):
 
         # output
         x = self.fc_out(x)
+
         return x

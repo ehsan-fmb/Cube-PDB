@@ -1,9 +1,6 @@
-import torch
 import os
 import numpy as np
-import math
 from utils.CornerPDB import State
-import pickle
 
 
 def swap(array,pos1,pos2):
@@ -55,15 +52,23 @@ def get_state(hash,corner_size=8):
 def readPDB(name):
 	
 	if not os.path.exists('pdbs/'+name+"/preprocessed.npy"):	
+		
 		dataset = []
 		dist={}
 		avg=0
 		filename="pdbs/"+name+"/"+name+".pdb"
+		headers=268
 		with open(filename, "rb") as f:
-			byte=f.read(1)
+			
+			# read headers first
+			while headers>0:
+				byte=f.read(1)
+				headers-=1	
+			
+			byte=f.read(1)	
 			depth = int.from_bytes(byte, "big")
 			index=0
-			while byte:
+			while byte:				
 				first_part=depth//16
 				second_part=depth%16 
 				dataset.append([first_part,index])
@@ -74,11 +79,11 @@ def readPDB(name):
 
 				# add to the dist
 				if first_part not in dist:
-					dist[first_part]=0
+					dist[first_part]=1
 				else:
 					dist[first_part]+=1
 				if second_part not in dist:
-					dist[second_part]=0
+					dist[second_part]=1
 				else:
 					dist[second_part]+=1
 				
@@ -92,7 +97,9 @@ def readPDB(name):
 		with open("pdbs/"+name+"/"+'info.txt', 'a') as file:
 			file.write("*"*50+"\n")
 			file.write("average heuristic: "+str(avg/len(dataset))+"\n")
+			file.write("number of entries: "+str(len(dataset))+"\n")
 			file.write("heuristic distribution: \n")
+			dist=dict(sorted(dist.items()))
 			for key in dist: 
 				file.write("value: "+str(key)+"        number:  "+str(dist[key])+"\n")
 		
