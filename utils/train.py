@@ -199,7 +199,7 @@ def run(model,dataset,learning_rate,epochs,batch_size,pdb_name,test_interval,acc
     # define loss, optimizer, and send model paramters to the device
     model.to(device)
     criterion =CustomLoss(loss_lambda,model.out_dim)
-    optimizer: Optimizer = optim.AdamW(model.parameters(), lr=learning_rate,weight_decay=1e-5)
+    optimizer: Optimizer = optim.AdamW(model.parameters(), lr=learning_rate,weight_decay=1e-4)
     scheduler = StepLR(optimizer, step_size=100, gamma=0.9998)
     
     # define the validation set and write its information
