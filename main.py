@@ -15,8 +15,8 @@ out_dim=12
 
 # training hyperparamters
 test_interval=1e3
-accuracy_threshold=0.01
-accuracy_decay=0.997
+accuracy_threshold=0.001
+accuracy_decay=0.991
 
 
 
