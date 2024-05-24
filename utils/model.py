@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F 
 
-
 # cpu or gpu
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -20,14 +19,19 @@ class CustomLoss(nn.Module):
         weights = weights*position_difference
         
         return weights/self.num_classes
+    
+    def stable_softmax(self,x):
+        max_vals, _ = torch.max(x, dim=-1, keepdim=True)
+        x_exp = torch.exp(x - max_vals)
+        return x_exp / torch.sum(x_exp, dim=-1, keepdim=True)
 
 
     def forward(self, outputs, targets):
         
         ce_loss = nn.CrossEntropyLoss()(outputs, targets)
         
-        # Convert targets to one-hot encoding and get the probs for classess
-        probs = torch.softmax(outputs, dim=1)        
+        # Convert targets to one-hot encoding and get the probs for classess with a stable softmax function
+        probs = self.stable_softmax(outputs)        
         
         # get higher log-probs than true prob
         true_probs=probs[torch.arange(probs.size(0)), targets]
