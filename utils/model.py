@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F 
+import torch.nn.functional as F
 
 # cpu or gpu
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -22,8 +22,7 @@ class CustomLoss(nn.Module):
     
     def stable_softmax(self,x):
         max_vals, _ = torch.max(x, dim=-1, keepdim=True)
-        x_exp = torch.exp(x - max_vals)
-        return x_exp / torch.sum(x_exp, dim=-1, keepdim=True)
+        return F.softmax(x-max_vals,dim=-1) 
 
 
     def forward(self, outputs, targets):
