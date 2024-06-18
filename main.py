@@ -1,8 +1,11 @@
 from utils.dataloader import readPDB
+from utils.dataloader import get_state
 import argparse
 from utils.train import run
 from utils.model import ResnetModel
 import torch.nn as nn
+import torch
+import numpy as np
 
 # NN layers
 fc_dim=5000
@@ -17,6 +20,22 @@ test_interval=1e3
 accuracy_threshold=0.001
 accuracy_decay=0.988
 
+
+
+def convert_model(name):
+    
+    # load the model
+    model=ResnetModel((3,3),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
+    model.load_state_dict(torch.load("models/"+name+"/"+'model.pth'))
+    model.eval()
+    
+    # Trace the model
+    example_input=get_state(10)
+    example_input=np.expand_dims(example_input, 0)
+    example_input=torch.tensor(example_input,dtype=torch.float32)
+    traced_model = torch.jit.trace(model, example_input)
+    traced_model.save("models/"+name+"/"+"model_traced.pt")
+    
 
 
 # Initialize the weights using Xavier uniform
@@ -50,4 +69,7 @@ if __name__ == "__main__":
         # start training
         run(model,dataset,float(args.lr),int(float(args.epochs)),int(float(args.batch_size))
             ,args.pdb_name,int(test_interval),accuracy_threshold,accuracy_decay)
+    
+    else:
+        convert_model(args.pdb_name)
     

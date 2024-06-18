@@ -9,6 +9,10 @@
 #include "SharedQueue.h"
 #include <thread>
 #include <inttypes.h>
+#include <torch/script.h> // One-stop header.
+#include <torch/torch.h>
+
+
 
 const int workDepth = 5;
 using namespace std;

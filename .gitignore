@@ -2,3 +2,4 @@
 models/*
 pdbs/*
 *.pyc
+inc/libtorch
