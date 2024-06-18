@@ -110,5 +110,3 @@ def readPDB(name):
 
 	return dataset
 	
-
-	

@@ -6,6 +6,7 @@ from torch.optim.optimizer import Optimizer
 from utils.dataloader import get_state
 from utils.model import CustomLoss
 from multiprocessing import Pool
+from utils.model import CustomLoss
 from torch.optim.lr_scheduler import StepLR
 import gc
 
@@ -22,14 +23,14 @@ num_process=None
 pool = Pool(processes=num_process)
 
 
-def calculate_overestimated_samples(model,samples):
+def calculate_overestimated_samples(model,samples,criterion):
     
     # get one-hot encoded inputs in parallel
     inputs,cost_to_go=make_batch(test_samples=samples)
     
     # get the probs from model
     nn_output=model(inputs)
-    probs = torch.softmax(nn_output, dim=1)
+    probs =criterion.stable_softmax(nn_output)
 
     # pick the class from probs and calculte the overestimations
     classes=torch.argmax(probs,dim=1)    
@@ -61,7 +62,8 @@ def create_validation_set(dataset):
 
     return validation_set,np.sum(validation_set[:,0])/validation_set.shape[0]
 
-def test(model,dataset):
+
+def test(model,dataset,criterion):
     
     # turn on testing mode
     model.eval()
@@ -80,7 +82,7 @@ def test(model,dataset):
         samples=dataset[start_index:end_index+1,:]
 
         # get the overestimated samples for this chunk
-        miss,heuristic_sum=calculate_overestimated_samples(model,samples)
+        miss,heuristic_sum=calculate_overestimated_samples(model,samples,criterion)
         total_miss+=miss
         total_sum+=heuristic_sum
 
@@ -91,9 +93,8 @@ def test(model,dataset):
 
 def update_target(model,pdb_name):
 
-    # save both original model
+    # save the current model
     torch.save(model.state_dict(),"models/"+pdb_name+"/"+'model.pth')
-
 
 
 def make_batch(dataset=None,batch_size=None,test_samples=None):
@@ -117,8 +118,7 @@ def make_batch(dataset=None,batch_size=None,test_samples=None):
     inputs=np.stack(inputs)
     outputs=torch.tensor(outputs,device=device,dtype=torch.long)
     inputs=torch.tensor(inputs,device=device,dtype=torch.float32)
-    
-    
+
     return inputs,outputs
 
 def display_progress(miss,losses,pdb_name,last_epoch,interval,average_heuristic,new_inaccuracy,new_average_heuristic,true_average=None):
@@ -153,20 +153,22 @@ def update(dataset_1,dataset_2,model,batch_size,optimizer,criterion):
     # get a uniformly random batch of data
     inputs,cost_to_go=make_batch(dataset=[dataset_1,dataset_2],batch_size=batch_size)
     
-    # forward to get nn outputs
-    nn_probs=model(inputs)
-    
-    #loss
-    loss = criterion(nn_probs, cost_to_go)
+    # Enable anomaly detection
+    with torch.autograd.set_detect_anomaly(True):
+        # forward to get nn outputs
+        nn_probs=model(inputs)
+        
+        #loss
+        loss = criterion(nn_probs, cost_to_go)
 
-    # backwards
-    loss.backward()
+        # backwards
+        loss.backward()
 
-    # Gradient clipping
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 3)
-    
-    # step
-    optimizer.step()
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 2)
+        
+        # step
+        optimizer.step()
 
     # refresh cuda memory
     del inputs
@@ -235,11 +237,9 @@ def run(model,dataset,learning_rate,epochs,batch_size,pdb_name,test_interval,acc
 
         # update target model if model is improved
         if (i+1)%test_interval==0:    
-            
-            print("epoch: "+str(i+1))
 
             # get the new accuracy
-            new_inaccuracy,new_average_heuristic=test(model,val_dataset)
+            new_inaccuracy,new_average_heuristic=test(model,val_dataset,criterion)
             
             # update the model if a better accuracy is found
             if compare_models(inaccuracy,new_inaccuracy,avg_heuristic,new_average_heuristic,accuracy_threshold):
@@ -253,6 +253,7 @@ def run(model,dataset,learning_rate,epochs,batch_size,pdb_name,test_interval,acc
             # print information in the file
             display_progress(inaccuracy,losses,pdb_name,(i+1),test_interval,avg_heuristic,new_inaccuracy,new_average_heuristic)
             losses=[]
+            
 
 
 

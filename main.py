@@ -2,8 +2,7 @@ from utils.dataloader import readPDB
 import argparse
 from utils.train import run
 from utils.model import ResnetModel
-import sys
-from utils.dataloader import get_state
+import torch.nn as nn
 
 # NN layers
 fc_dim=5000
@@ -16,8 +15,16 @@ out_dim=12
 # training hyperparamters
 test_interval=1e3
 accuracy_threshold=0.001
-accuracy_decay=0.991
+accuracy_decay=0.988
 
+
+
+# Initialize the weights using Xavier uniform
+def initialize_weights(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+        nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
 
 
 if __name__ == "__main__":
@@ -36,11 +43,11 @@ if __name__ == "__main__":
         dataset=readPDB(args.pdb_name)
         print("dataset is loaded.")
 
-        # initiate the models
+        # initiate the models with xavier uniform weights
         model=ResnetModel((3,3),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
+        model.apply(initialize_weights)
         
         # start training
         run(model,dataset,float(args.lr),int(float(args.epochs)),int(float(args.batch_size))
             ,args.pdb_name,int(test_interval),accuracy_threshold,accuracy_decay)
-
     

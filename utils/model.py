@@ -10,7 +10,7 @@ class CustomLoss(nn.Module):
         super(CustomLoss, self).__init__()
         self.lambda_value = lambda_value
         self.num_classes=num_classes
-        self.epsilon=torch.tensor(1e-8,device=device)
+        self.epsilon=torch.tensor(1e-10,device=device)
 
     def assgin_weights(self,probs,targets):
         
@@ -36,7 +36,8 @@ class CustomLoss(nn.Module):
         true_probs=probs[torch.arange(probs.size(0)), targets]
         true_expanded = true_probs.unsqueeze(1).expand(-1, probs.size(1))
         mask = probs > true_expanded
-        higher__log_probs=torch.log(self.epsilon+1-probs*mask)
+        higher_probs=1-probs*mask
+        higher__log_probs=torch.log(torch.clamp(higher_probs,min=self.epsilon))
 
         # make all values zero before the true class
         mask = torch.arange(higher__log_probs.size(1)).unsqueeze(0).to(device=device) > targets.unsqueeze(1)
