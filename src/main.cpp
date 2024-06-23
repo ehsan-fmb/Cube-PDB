@@ -21,6 +21,30 @@ void GetRubikStep14Instance(RubiksState &start, int which)
 	}
 }
 
+torch::jit::script::Module load_model()
+{	
+	
+	//load the model
+	torch::jit::script::Module module;
+    try {
+        module = torch::jit::load("../models/8-corners/model_traced.pt");
+    }
+    catch (const c10::Error &e) {
+        std::cerr << "error loading the model\n";
+		exit(-1);
+    }
+
+	// Check if CUDA is available
+    if (torch::cuda::is_available()) {
+        std::cout << "CUDA is available! Moving model to GPU." << std::endl;
+        module.to(torch::kCUDA);
+    } else {
+        std::cout << "CUDA is not available. Using CPU." << std::endl;
+    }
+
+	return module;
+}
+
 void Test()
 {
 	
@@ -32,10 +56,20 @@ void Test()
 	Timer timer;
 	cube.SetPruneSuccessors(true);
 	
+	torch::jit::script::Module module=load_model();
+	module.eval();
+
+	torch::jit::script::Module module_test=load_model();
+	module_test.eval();
+	bida.SetNNHeuristicTest(&module_test);
+
+
 	printf("-=-=-PIDA*-=-=-\n");
 	for (int x = 0; x < 100; x++)
 	{
-		GetRubikStep14Instance(start, x);	
+		GetRubikStep14Instance(start, x);
+
+		bida.SetNNHeuristic(&module);	
 		goal.Reset();	
 		timer.StartTimer();
 		bida.GetPath(&cube, start, goal, rubikPath);

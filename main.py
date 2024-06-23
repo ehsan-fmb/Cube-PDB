@@ -72,4 +72,3 @@ if __name__ == "__main__":
     
     else:
         convert_model(args.pdb_name)
-    
