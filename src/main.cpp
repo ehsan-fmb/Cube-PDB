@@ -58,11 +58,8 @@ void Test()
 	
 	torch::jit::script::Module module=load_model();
 	module.eval();
-
-	torch::jit::script::Module module_test=load_model();
-	module_test.eval();
-	bida.SetNNHeuristicTest(&module_test);
-
+	module.to(torch::kCUDA);
+	exit(0);
 
 	printf("-=-=-PIDA*-=-=-\n");
 	for (int x = 0; x < 100; x++)

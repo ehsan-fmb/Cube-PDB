@@ -5,7 +5,8 @@
 #include "FPUtil.h"
 #include "vectorCache.h"
 #include "SharedQueue.h"
-#include "SharedBatch.h"
+#include "SmallBatch.h"
+#include "LargeBatch.h"
 #include <thread>
 #include <inttypes.h>
 #include <torch/script.h> // One-stop header.
@@ -13,11 +14,12 @@
 #include <stdexcept>
 #include <iostream>
 #include <unordered_map>
-
+#include <cassert>
 
 
 const int workDepth = 5;
 const int smallbatchsize=20;
+const int largebatchsize=2000;
 using namespace std;
 
 template <class action>
@@ -29,6 +31,7 @@ struct workUnit {
 	double nextBound;
 	uint64_t expanded, touched;
 	int unitNumber;
+	int nodeCount;
 };
 
 template <class environment, class state, class action>
@@ -85,8 +88,10 @@ private:
 		printf("\n");
 	}
 	void UpdateNextBound(double currBound, double fCost);
-	torch::Tensor GetNNOutput();
-	void FeedBatch(SharedBatch &batch);
+	torch::Tensor GetNNOutput(torch::Tensor samples);
+	double GetSavedHCost(int worknumber,int index);
+	void FeedSmallBatch(SmallBatch &batch);
+	void FeedLargeBatch(LargeBatch &batch);
 	int GetFaceColor(int face,state s);
 	void SetFrontiersHCost(environment *env);
 	torch::Tensor GetNNInput(state s);
@@ -94,6 +99,7 @@ private:
 	double nextBound;
 	bool storedHeuristic;
 	mutable std::mutex modelLock;
+	mutable std::mutex HCostListLock;
 	Heuristic<state> *heuristic;
 	torch::jit::script::Module *model;
 	vector<uint64_t> gCostHistogram;
@@ -102,9 +108,11 @@ private:
 	vector<thread*> threads;
 	unordered_map<uint64_t, double> frontiers;
 	vector<torch::jit::IValue> inputs;
+	std::vector<std::vector<double>> SavedHCosts;
 	double frontiersmaxfcost;
 	SharedQueue<int> q;
-	SharedBatch smallBatch;
+	SmallBatch smallBatch;
+	LargeBatch largeBatch;
 	int foundSolution;
     bool finishAfterSolution;
 };
@@ -112,7 +120,7 @@ private:
 
 template <class environment, class state, class action>
 BatchIDAStar<environment, state, action>::BatchIDAStar():
-storedHeuristic(false),finishAfterSolution(false),smallBatch(smallbatchsize)
+storedHeuristic(false),finishAfterSolution(false),smallBatch(smallbatchsize),largeBatch(largebatchsize)
 { 	
 }
 
@@ -124,8 +132,8 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 {
 	
 	// define two threads that feed the nn with samll and large batches 
-	thread smallBatchFeeder(&BatchIDAStar<environment, state, action>::FeedBatch, this,ref(smallBatch));
-	// thread largeBatchFeeder(&BatchIDAStar<environment, state, action>::FeedBatch, this,largeBatch));
+	thread smallBatchFeeder(&BatchIDAStar<environment, state, action>::FeedSmallBatch, this,ref(smallBatch));
+	thread largeBatchFeeder(&BatchIDAStar<environment, state, action>::FeedLargeBatch, this,ref(largeBatch));
 	
 	const auto numThreads = thread::hardware_concurrency();
 	cout<<"number of threads: "<<numThreads<<endl;
@@ -159,9 +167,13 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 	foundSolution = work.size() + 1;
 
 
+	// initialize the SavedHCosts with number of works
+	SavedHCosts.resize(work.size());
+
+
 
 	// assign h-values for frontier nodes
-	//SetFrontiersHCost(env);
+	SetFrontiersHCost(env);
 
 	
 	while (foundSolution > work.size())
@@ -289,6 +301,7 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 		localWork.nextBound = 10*bound;//FIXME: Better ways to do this
 		localWork.expanded = 0;
 		localWork.touched = 0;
+		localWork.nodeCount=0;
 
 		for (int x = 0; x < workDepth; x++)
 		{
@@ -320,6 +333,11 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 			g -= env.GCost(startState, localWork.pre[x]);
 		}
 		work[nextValue] = localWork;
+
+
+		// clear the work from SavedHCosts after its termination
+		SavedHCosts[localWork.unitNumber]=std::vector<double>();
+
 	}
 }
 
@@ -331,9 +349,13 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 															  workUnit<action> &w, vectorCache<action> &cache)
 {
 	
-	torch::Tensor input=GetNNInput(currState);
-	int index=smallBatch.Add(input);
-	double h = smallBatch.GetHcost(index);
+	double h=GetSavedHCost(w.unitNumber,w.nodeCount);
+	if(h==-1)
+	{
+		torch::Tensor input=GetNNInput(currState);
+		int index=smallBatch.Add(input);
+		h = smallBatch.GetHcost(index);
+	}
 
 	if (fgreater(g+h, bound))
 	{
@@ -363,7 +385,16 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 
 	// save nodes in large list to get their values when search
 	// is back to upper levels
-
+	for (unsigned int x = 0; x < actions.size(); x++)
+	{
+		if (actions[x] == forbiddenAction) 
+			continue;
+		
+		w.nodeCount++;
+		env->ApplyAction(currState, actions[x]);
+		largeBatch.Add(GetNNInput(currState),w.unitNumber,w.nodeCount);
+		env->UndoAction(currState, actions[x]);
+	}
 	
 	for (unsigned int x = 0; x < actions.size(); x++)
 	{
@@ -371,7 +402,7 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 			continue;
 		
 		thePath.push_back(actions[x]);
-		
+
 		double edgeCost = env->GCost(currState, actions[x]);
 		env->ApplyAction(currState, actions[x]);
 		action a = actions[x];
@@ -384,6 +415,16 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 	}
 	cache.returnItem(&actions);
 }
+
+
+template <class environment, class state, class action>
+double BatchIDAStar<environment, state, action>::GetSavedHCost(int worknumber,int index)
+{
+	std::lock_guard<std::mutex> l(HCostListLock);
+	double cost= (index < SavedHCosts[worknumber].size()) ? SavedHCosts[worknumber][index] : -1;
+	return cost;
+}
+
 
 
 template <class environment, class state, class action>
@@ -403,7 +444,6 @@ template <class environment, class state, class action>
 void BatchIDAStar<environment, state, action>::SetFrontiersHCost(environment *env)
 {
 	double maxhcost=-1;
-	inputs.clear();
 
 	// update the hcosts with NN and find the maximum hcost among them
 	for (auto it = frontiers.begin(); it != frontiers.end(); it++)
@@ -412,8 +452,7 @@ void BatchIDAStar<environment, state, action>::SetFrontiersHCost(environment *en
 		env->GetStateFromHash(it->first,s);
 		torch::Tensor input=GetNNInput(s);
 		input=torch::unsqueeze(input,0);
-		inputs.push_back(input);
-		torch::Tensor h_value = GetNNOutput();
+		torch::Tensor h_value = GetNNOutput(input);
 		
 		// set maximum h-cost for frontiers
 		it->second=h_value.item<double>();
@@ -425,36 +464,48 @@ void BatchIDAStar<environment, state, action>::SetFrontiersHCost(environment *en
 }
 
 template <class environment, class state, class action>
-torch::Tensor BatchIDAStar<environment, state, action>::GetNNOutput()
+torch::Tensor BatchIDAStar<environment, state, action>::GetNNOutput(torch::Tensor samples)
 {
+	std::lock_guard<std::mutex> l(modelLock);
+	inputs.push_back(samples);
 	torch::Tensor outputs= model->forward(inputs).toTensor();
 	torch::Tensor probs=torch::softmax(outputs,1);
-	inputs.clear();
+	inputs=vector<torch::jit::IValue>();
 	return torch::argmax(probs,1);
 }
 
-// template <class environment, class state, class action>
-// torch::Tensor BatchIDAStar<environment, state, action>::GetNNOutputTest(torch::Tensor tensor)
-// {
-// 	std::lock_guard<std::mutex> l(modelLock);
-// 	// cvmodel.wait(l, [this](){return !modelBusy;});
-// 	// modelBusy=true;
-// 	inputs_test.push_back(tensor);
-// 	torch::Tensor outputs= model_test->forward(inputs_test).toTensor();
-// 	torch::Tensor probs=torch::softmax(outputs,1);
-// 	inputs_test.clear();
-// 	return torch::argmax(probs,1);
-// }
-
 template <class environment, class state, class action>
-void BatchIDAStar<environment, state, action>::FeedBatch(SharedBatch &batch)
+void BatchIDAStar<environment, state, action>::FeedSmallBatch(SmallBatch &batch)
 {
 	while (true)
 	{
 		batch.IsFull();
-		inputs.push_back(torch::stack(batch.samples));
-		torch::Tensor h_values=GetNNOutput();
+		torch::Tensor h_values=GetNNOutput(torch::stack(batch.samples));
 		batch.Inform(h_values);
+	}
+	
+}
+
+template <class environment, class state, class action>
+void BatchIDAStar<environment, state, action>::FeedLargeBatch(LargeBatch &batch)
+{
+	while (true)
+	{
+		batch.IsFull();
+		torch::Tensor h_values=GetNNOutput(torch::stack(batch.samples));
+
+		// put values in their corresponding position in the list
+		std::lock_guard<std::mutex> l(HCostListLock);
+		for (size_t i = 0; i < batch.units.size(); ++i) 
+		{
+        	batchUnit unit=batch.units[i];
+			SavedHCosts[unit.workNumber].push_back(h_values[i].item<double>());
+			// debugging purpose
+			assert(SavedHCosts[unit.workNumber].size()==unit.index && "The hcosts are not in the right order.");
+    	}
+
+		// clear the batch
+		batch.Empty();
 	}
 	
 }
