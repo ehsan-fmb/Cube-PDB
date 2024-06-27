@@ -3,6 +3,7 @@
 #include "RubiksCube.h"
 #include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
+#include <memory>
 
 using namespace std;
 
@@ -37,7 +38,7 @@ torch::jit::script::Module load_model()
 	// Check if CUDA is available
     if (torch::cuda::is_available()) {
         std::cout << "CUDA is available! Moving model to GPU." << std::endl;
-        module.to(torch::kCUDA);
+        module.to(device);
     } else {
         std::cout << "CUDA is not available. Using CPU." << std::endl;
     }
@@ -58,8 +59,6 @@ void Test()
 	
 	torch::jit::script::Module module=load_model();
 	module.eval();
-	module.to(torch::kCUDA);
-	exit(0);
 
 	printf("-=-=-PIDA*-=-=-\n");
 	for (int x = 0; x < 100; x++)

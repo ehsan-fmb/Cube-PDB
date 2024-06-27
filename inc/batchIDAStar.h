@@ -15,11 +15,13 @@
 #include <iostream>
 #include <unordered_map>
 #include <cassert>
+#include <memory>
 
 
 const int workDepth = 5;
 const int smallbatchsize=20;
 const int largebatchsize=2000;
+torch::Device device(torch::kCUDA,1);
 using namespace std;
 
 template <class action>
@@ -444,20 +446,30 @@ template <class environment, class state, class action>
 void BatchIDAStar<environment, state, action>::SetFrontiersHCost(environment *env)
 {
 	double maxhcost=-1;
-
+	vector<torch::Tensor> samples;
+	vector<double*> values;
+	const int length=80000;
 	// update the hcosts with NN and find the maximum hcost among them
 	for (auto it = frontiers.begin(); it != frontiers.end(); it++)
 	{
     	state s;
 		env->GetStateFromHash(it->first,s);
-		torch::Tensor input=GetNNInput(s);
-		input=torch::unsqueeze(input,0);
-		torch::Tensor h_value = GetNNOutput(input);
+		torch::Tensor input=GetNNInput(s);		
+		samples.push_back(input);
+		values.push_back(&it->second);
 		
-		// set maximum h-cost for frontiers
-		it->second=h_value.item<double>();
-		if (it->second>maxhcost)
-			maxhcost=it->second;
+		if(samples.size()==length)
+		{
+			torch::Tensor h_values = GetNNOutput(torch::stack(samples));
+			for(unsigned int i = 0; i < length; i++)
+  			{
+    			*values[i]=h_values[i].item<double>();
+				if (*values[i]>maxhcost)
+					maxhcost=*values[i];		
+  			}
+			samples=vector<torch::Tensor>();
+			values=vector<double*>();
+		}
 	}
 
 	frontiersmaxfcost=workDepth+maxhcost;
@@ -467,6 +479,7 @@ template <class environment, class state, class action>
 torch::Tensor BatchIDAStar<environment, state, action>::GetNNOutput(torch::Tensor samples)
 {
 	std::lock_guard<std::mutex> l(modelLock);
+	samples=samples.to(device);
 	inputs.push_back(samples);
 	torch::Tensor outputs= model->forward(inputs).toTensor();
 	torch::Tensor probs=torch::softmax(outputs,1);

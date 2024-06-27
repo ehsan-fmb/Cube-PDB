@@ -9,8 +9,9 @@ CXXFLAGS = -std=c++17 -Wall -g -pthread -I./inc -I./inc/hog2/graph -I./inc/hog2/
  -I./inc/hog2/algorithms -I./inc/hog2/search -I./inc/hog2/gui -I$(LIBTORCH)/include -I$(LIBTORCH)/include/torch/csrc/api/include 
 
 # Library paths (where to find the libraries)
-CUDA_FLAGS := -L/usr/local/cuda/lib64 -lcudart
-LDFLAGS = -L./inc/hog2/bin/release -L$(LIBTORCH)/lib -ltorch_cpu -ltorch_cuda -lc10 -Wl,-rpath,$(LIBTORCH)/lib $(CUDA_FLAGS) 
+CUDA_FLAGS := -L/usr/local/cuda-12.1/lib64 -lcudart
+LDFLAGS = -Wl,-no-undefined -Wl,--no-as-needed \
+-L./inc/hog2/bin/release -L$(LIBTORCH)/lib -ltorch -ltorch_cpu -ltorch_cuda -lc10_cuda -lc10 -Wl,-rpath,$(LIBTORCH)/lib $(CUDA_FLAGS)
 LDLIBS = -lgraph -lenvironments -lenvutil -lmapalgorithms -lalgorithms -lgraphalgorithms -lutils  -lSTUB 
 
 # Define the directories
@@ -30,7 +31,7 @@ all: $(TARGET)
 
 # Rule to link in one step
 $(OUTPUT): $(OBJ) 
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ) $(LDLIBS) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS) 
 
 # Rules to compile source files into object files
 $(OBJ): $(SRC)
