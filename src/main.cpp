@@ -1,12 +1,14 @@
 #include <iostream>
-// #include "IDAStar.h"
-// #include "ParallelIDAStar.h"
+#include "IDAStar.h"
+#include "ParallelIDAStar.h"
 #include "batchIDAStar.h"
 #include "singleIDAStar.h"
 #include "RubiksCube.h"
 #include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
 #include <memory>
+#include <stdexcept>
+
 
 using namespace std;
 
@@ -49,10 +51,9 @@ torch::jit::script::Module load_model()
 	return module;
 }
 
-void Test()
+void Test(string method)
 {
 	
-	BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida;
 	RubiksCube cube;
 	RubiksState start, goal;
 	goal.Reset();
@@ -60,29 +61,77 @@ void Test()
 	Timer timer;
 	cube.SetPruneSuccessors(true);
 	
+	
+	// load NN heuristic
 	torch::jit::script::Module module=load_model();
 	module.eval();
 
-	printf("-=-=-PIDA*-=-=-\n");
+
+	// load 8-corners pdb heuristic
+	vector<int> blank;
+	vector<int> corners;
+	string filename="../pdbs/8-corners/8-corners.pdb";
+	corners = {0, 1, 2, 3, 4, 5, 6, 7};
+	RubikPDB pdb(&cube, goal, blank, corners);
+	FILE *file = fopen(filename.c_str(), "r");
+	pdb.Load(file);
+	Heuristic<RubiksState> h;
+	h.lookups.push_back({kMaxNode, 1, 1});
+	h.lookups.push_back({kLeafNode, 0, 0});
+	h.heuristics.push_back(&pdb);
+
+
 	for (int x = 0; x < 100; x++)
 	{
 		GetRubikStep14Instance(start, x);
 
-		bida.SetNNHeuristic(&module);	
-		goal.Reset();	
-		timer.StartTimer();
-		bida.GetPath(&cube, start, goal, rubikPath);
-		timer.EndTimer();
-		printf("%llu nodes expanded; %llu generated\n", bida.GetNodesExpanded(), bida.GetNodesTouched());
-		printf("Solution path length %lu\n", rubikPath.size());
-		printf("%1.2f elapsed\n", timer.GetElapsedTime());
+		
+		if (method=="Batch")
+		{
+			printf("-=-=-BPIDA*-=-=-\n");
+			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida;
+			bida.SetNNHeuristic(&module);	
+			goal.Reset();	
+			timer.StartTimer();
+			bida.GetPath(&cube, start, goal, rubikPath);
+			timer.EndTimer();
+			printf("%llu nodes expanded; %llu generated\n", bida.GetNodesExpanded(), bida.GetNodesTouched());
+			printf("Solution path length %lu\n", rubikPath.size());
+			printf("%1.2f elapsed\n", timer.GetElapsedTime());
+		}
+		else if(method=="Parallel")
+		{	
+			printf("-=-=-PIDA*-=-=-\n");
+			ParallelIDAStar<RubiksCube, RubiksState, RubiksAction> pida;
+			pida.SetHeuristic(&h);
+			timer.StartTimer();
+			pida.GetPath(&cube, start, goal, rubikPath);
+			timer.EndTimer();
+			printf("%llu nodes expanded; %llu generated\n", pida.GetNodesExpanded(), pida.GetNodesTouched());
+			printf("Solution path length %lu\n", rubikPath.size());
+			printf("%1.2f elapsed\n", timer.GetElapsedTime());
+
+		}
+		else if(method=="Single")
+		{
+
+		}
+		else if(method=="Standard")
+		{
+
+		}
+		else
+			throw invalid_argument( "method does not exist." );
+
+
 	}
 	
 }
 
 
-int main()
+int main(int argc, char *argv[])
 {
-	Test();
+	string method=argv[1];
+	Test(method);
 	return 0;
 }

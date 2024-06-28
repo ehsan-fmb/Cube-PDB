@@ -18,14 +18,13 @@
 #include <memory>
 
 
-const int workDepth = 5;
 const int smallbatchsize=20;
 const int largebatchsize=2000;
 torch::Device device(torch::kCUDA,1);
 using namespace std;
 
 template <class action>
-struct workUnit {
+struct BatchworkUnit {
 	action pre[workDepth];
 	vector<action> solution;
 	vector<int> gHistogram;
@@ -57,7 +56,7 @@ private:
 	void DoIteration(environment *env,
 					 action forbiddenAction, state &currState,
 					 vector<action> &thePath, double bound, double g,
-					 workUnit<action> &w, vectorCache<action> &cache);
+					 BatchworkUnit<action> &w, vectorCache<action> &cache);
 	void GenerateWork(environment *env,
 					  action forbiddenAction, state &currState,
 					  vector<action> &thePath);
@@ -106,7 +105,7 @@ private:
 	torch::jit::script::Module *model;
 	vector<uint64_t> gCostHistogram;
 	vector<uint64_t> fCostHistogram;
-	vector<workUnit<action>> work;
+	vector<BatchworkUnit<action>> work;
 	vector<thread*> threads;
 	unordered_map<uint64_t, double> frontiers;
 	vector<torch::jit::IValue> inputs;
@@ -244,7 +243,7 @@ void BatchIDAStar<environment, state, action>::GenerateWork(environment *env,
 		
 	if (thePath.size() >= workDepth)
 	{
-		workUnit<action> w;
+		BatchworkUnit<action> w;
 		for (int x = 0; x < workDepth; x++)
 		{
 			w.pre[x] = thePath[x];
@@ -294,7 +293,7 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 		thePath.resize(0);
 		bool passedLimit = false;
 		double g = 0;
-		workUnit<action> localWork = work[nextValue];
+		BatchworkUnit<action> localWork = work[nextValue];
 		localWork.solution.resize(0);
 		localWork.gHistogram.clear();
 		localWork.gHistogram.resize(bound+1);
@@ -348,7 +347,7 @@ template <class environment, class state, class action>
 void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 															  action forbiddenAction, state &currState,
 															  vector<action> &thePath, double bound, double g,
-															  workUnit<action> &w, vectorCache<action> &cache)
+															  BatchworkUnit<action> &w, vectorCache<action> &cache)
 {
 	
 	double h=GetSavedHCost(w.unitNumber,w.nodeCount);

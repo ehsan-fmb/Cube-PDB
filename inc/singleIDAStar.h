@@ -14,6 +14,7 @@
 
 using namespace std;
 
+
 template <class environment, class state, class action>
 class SingleIDAStar {
 public:
