@@ -50,13 +50,13 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
     parser.add_argument('-pdb_name')
-    parser.add_argument('-train')
+    parser.add_argument('-task')
     parser.add_argument('-epochs')
     parser.add_argument('-lr')
     parser.add_argument('-batch_size')
     args = parser.parse_args()
     
-    if args.train=="True":
+    if args.task=="train":
         
         # load the dataset
         dataset=readPDB(args.pdb_name)
@@ -70,5 +70,9 @@ if __name__ == "__main__":
         run(model,dataset,float(args.lr),int(float(args.epochs)),int(float(args.batch_size))
             ,args.pdb_name,int(test_interval),accuracy_threshold,accuracy_decay)
     
-    else:
+    elif args.task=="convert":
         convert_model(args.pdb_name)
+    elif args.task=="test":
+        pass
+    else:
+        raise ValueError("task is not defined.")

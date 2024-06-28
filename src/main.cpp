@@ -1,5 +1,8 @@
 #include <iostream>
+// #include "IDAStar.h"
+// #include "ParallelIDAStar.h"
 #include "batchIDAStar.h"
+#include "singleIDAStar.h"
 #include "RubiksCube.h"
 #include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
