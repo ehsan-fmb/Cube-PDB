@@ -18,7 +18,6 @@ struct batchUnit {
 };
 
 
-
 class LargeBatch {
 public:
 	LargeBatch(int size,int t);
@@ -63,8 +62,8 @@ void LargeBatch::Add(torch::Tensor input,int work,int counter)
     {	
 		processing=true;
 		Full.notify_all();
-		cout<<"Large batch is full."<<endl;
 	}
+
 }
 
 void LargeBatch::IsFull()

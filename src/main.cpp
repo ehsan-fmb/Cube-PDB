@@ -27,6 +27,7 @@ void GetRubikStep14Instance(RubiksState &start, int which)
 	}
 
 	//print the state
+	cout<<"*********************************"<<endl;
 	cout << "corners: ";
     for (int i = 0; i < 16; i++)
         cout << unsigned(start.corner.state[i]) << " ";
@@ -35,6 +36,7 @@ void GetRubikStep14Instance(RubiksState &start, int which)
     for (int i = 0; i < 24; i++)
         cout << unsigned(start.edge.state[i]) << " ";
     cout << endl;
+	cout<<"*********************************"<<endl;
 }
 
 torch::jit::script::Module load_model()
@@ -76,6 +78,10 @@ void Test(string method)
 	torch::jit::script::Module module=load_model();
 	module.eval();
 
+	// for test
+	torch::jit::script::Module module_test=load_model();
+	module_test.eval();
+
 
 	// load 8-corners pdb heuristic
 	vector<int> blank;
@@ -90,7 +96,6 @@ void Test(string method)
 	h.lookups.push_back({kLeafNode, 0, 0});
 	h.heuristics.push_back(&pdb);
 
-
 	for (int x = 0; x < 100; x++)
 	{
 		GetRubikStep14Instance(start, x);
@@ -99,7 +104,9 @@ void Test(string method)
 		{
 			printf("-=-=-BPIDA*-=-=-\n");
 			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida;
-			bida.SetNNHeuristic(&module);	
+			bida.SetNNHeuristic(&module);
+			bida.SetNNHeuristicTest(&module_test);	
+			bida.SetHeuristic(&h);
 			goal.Reset();	
 			timer.StartTimer();
 			bida.GetPath(&cube, start, goal, rubikPath);
