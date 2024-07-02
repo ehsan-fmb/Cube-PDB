@@ -1,11 +1,14 @@
 from utils.dataloader import readPDB
 from utils.dataloader import get_state
+from utils.model import CustomLoss
+from utils.train import test
 import argparse
 from utils.train import run
 from utils.model import ResnetModel
 import torch.nn as nn
 import torch
 import numpy as np
+import sys
 
 # NN layers
 fc_dim=5000
@@ -20,6 +23,32 @@ test_interval=1e3
 accuracy_threshold=0.001
 accuracy_decay=0.988
 
+# cpu or gpu
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
+
+def evaluation(name):
+    
+    # load the model
+    model=ResnetModel((3,3),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
+    model.load_state_dict(torch.load("models/"+name+"/"+'model.pth'))
+    model.to(device)
+
+    # load the dataset
+    dataset=readPDB(name)
+    print("dataset is loaded.")
+
+    criterion =CustomLoss(1,model.out_dim)
+    overestimation,sum=test(model,dataset,criterion,chunk_num=2000)
+    
+    with open("models/"+name+"/"+'info.txt', 'a') as file:
+        file.write("*"*100+"\n")
+        file.write("*"*100+"\n")
+        file.write("Final info by using whole dataset as test set:"+"\n")
+        file.write("average heuristic: "+str(sum)+"\n")
+        file.write("overestimated states: "+str(overestimation)+"\n")
+        file.write("overestimation rate: "+str(overestimation/len(dataset))+"\n")
 
 
 def convert_model(name):
@@ -73,6 +102,6 @@ if __name__ == "__main__":
     elif args.task=="convert":
         convert_model(args.pdb_name)
     elif args.task=="test":
-        pass
+        evaluation(args.pdb_name)
     else:
         raise ValueError("task is not defined.")

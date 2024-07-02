@@ -14,17 +14,19 @@ using namespace std;
 
 class SmallBatch {
 public:
-	SmallBatch(int size);
+	SmallBatch(int size,int t);
 	~SmallBatch();
 	int Add(torch::Tensor input);
 	void IsFull();
 	double GetHcost(int rank);
-	void Inform(torch::Tensor costs);
+	void Inform(torch::Tensor &costs);
 	vector<torch::Tensor> samples;	
 	
 private:
-	bool costReady=false;
+	bool costReady;
+	bool processing;
 	int maxbatchsize;
+	int timeout;
 	int counter;
 	torch::Tensor hCosts;
 	mutable std::mutex lock;
@@ -33,8 +35,8 @@ private:
 };
 
 
-SmallBatch::SmallBatch(int size)
-:maxbatchsize(size)
+SmallBatch::SmallBatch(int size,int t)
+:maxbatchsize(size),costReady(false),timeout(t),processing(false)
 {
 }
 
@@ -47,7 +49,7 @@ SmallBatch::~SmallBatch()
 int SmallBatch::Add(torch::Tensor input)
 {
 	std::unique_lock<std::mutex> l(lock);
-	ready.wait(l, [this](){return ((!costReady)&&(samples.size()!=maxbatchsize));});
+	ready.wait(l, [this](){return ((!costReady)&&(!processing));});
 	samples.push_back(input);
 
 	// notify batchfeeder if the batch is full
@@ -65,9 +67,11 @@ double SmallBatch::GetHcost(int rank)
 
 	// Update the counter
 	counter++;
-    if (counter == maxbatchsize)
+    if (counter == hCosts.size(0))
+	{
 		costReady=false;
 		ready.notify_all();
+	}
 
 	return hCosts[rank-1].item<double>();
 }
@@ -75,20 +79,22 @@ double SmallBatch::GetHcost(int rank)
 
 void SmallBatch::IsFull()
 {
+	processing=false;
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait(l, [this](){return samples.size()==maxbatchsize;});
+	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return samples.size()==maxbatchsize;});
+	processing=true;
 }
 
-void SmallBatch::Inform(torch::Tensor costs)
+void SmallBatch::Inform(torch::Tensor &costs)
 {
 	lock.lock();
 	samples=vector<torch::Tensor>();
 	hCosts=costs;
 	counter=0;
 	costReady=true;
+	processing=false;
 	ready.notify_all();
 	lock.unlock();
 }
-
 
 #endif

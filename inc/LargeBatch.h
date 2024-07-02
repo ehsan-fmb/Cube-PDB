@@ -21,7 +21,7 @@ struct batchUnit {
 
 class LargeBatch {
 public:
-	LargeBatch(int size);
+	LargeBatch(int size,int t);
 	~LargeBatch();
 	void Add(torch::Tensor input,int work,int counter);
 	void IsFull();
@@ -31,13 +31,15 @@ public:
 	
 private:
 	int maxbatchsize;
+	bool processing;
+	int timeout;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
 };
 
 
-LargeBatch::LargeBatch(int size)
-:maxbatchsize(size)
+LargeBatch::LargeBatch(int size,int t)
+:maxbatchsize(size),timeout(t),processing(false)
 {
 }
 
@@ -50,7 +52,7 @@ LargeBatch::~LargeBatch()
 void LargeBatch::Add(torch::Tensor input,int work,int counter)
 {
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait(l, [this](){return (samples.size()!=maxbatchsize);});
+	Full.wait(l, [this](){return (!processing);});
 	samples.push_back(input);
     batchUnit unit;
     unit.index=counter;
@@ -58,14 +60,19 @@ void LargeBatch::Add(torch::Tensor input,int work,int counter)
     units.push_back(unit);
 
     if(samples.size()==maxbatchsize)
-        Full.notify_all();
+    {	
+		processing=true;
+		Full.notify_all();
+		cout<<"Large batch is full."<<endl;
+	}
 }
-
 
 void LargeBatch::IsFull()
 {
+	processing=false;
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait(l, [this](){return samples.size()==maxbatchsize;});
+	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return samples.size()==maxbatchsize;});
+	processing=true;
 }
 
 void LargeBatch::Empty()
@@ -73,6 +80,7 @@ void LargeBatch::Empty()
 	lock.lock();
     samples=vector<torch::Tensor>();
     units=vector<batchUnit>();
+	processing=false;
     lock.unlock();
     Full.notify_all();
 }

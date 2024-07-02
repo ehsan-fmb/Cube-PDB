@@ -25,6 +25,16 @@ void GetRubikStep14Instance(RubiksState &start, int which)
 	{
 		c.ApplyAction(start, random()%18);
 	}
+
+	//print the state
+	cout << "corners: ";
+    for (int i = 0; i < 16; i++)
+        cout << unsigned(start.corner.state[i]) << " ";
+    cout << endl;
+	cout << "edges: ";
+    for (int i = 0; i < 24; i++)
+        cout << unsigned(start.edge.state[i]) << " ";
+    cout << endl;
 }
 
 torch::jit::script::Module load_model()
@@ -84,7 +94,6 @@ void Test(string method)
 	for (int x = 0; x < 100; x++)
 	{
 		GetRubikStep14Instance(start, x);
-
 		
 		if (method=="Batch")
 		{

@@ -6,7 +6,6 @@ from torch.optim.optimizer import Optimizer
 from utils.dataloader import get_state
 from utils.model import CustomLoss
 from multiprocessing import Pool
-from utils.model import CustomLoss
 from torch.optim.lr_scheduler import StepLR
 import gc
 
@@ -16,8 +15,6 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # define these terms
 # lambda for second term of the loss
 # pool for multiprocessing
-# number samples for test
-chunk_num=100
 loss_lambda=1
 num_process=None
 pool = Pool(processes=num_process)
@@ -63,7 +60,7 @@ def create_validation_set(dataset):
     return validation_set,np.sum(validation_set[:,0])/validation_set.shape[0]
 
 
-def test(model,dataset,criterion):
+def test(model,dataset,criterion,chunk_num=100):
     
     # turn on testing mode
     model.eval()
@@ -153,22 +150,20 @@ def update(dataset_1,dataset_2,model,batch_size,optimizer,criterion):
     # get a uniformly random batch of data
     inputs,cost_to_go=make_batch(dataset=[dataset_1,dataset_2],batch_size=batch_size)
     
-    # Enable anomaly detection
-    with torch.autograd.set_detect_anomaly(True):
-        # forward to get nn outputs
-        nn_probs=model(inputs)
-        
-        #loss
-        loss = criterion(nn_probs, cost_to_go)
+    # forward to get nn outputs
+    nn_probs=model(inputs)
+    
+    #loss
+    loss = criterion(nn_probs, cost_to_go)
 
-        # backwards
-        loss.backward()
+    # backwards
+    loss.backward()
 
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 2)
-        
-        # step
-        optimizer.step()
+    # Gradient clipping
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 2)
+    
+    # step
+    optimizer.step()
 
     # refresh cuda memory
     del inputs

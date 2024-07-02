@@ -6,7 +6,8 @@ LIBTORCH := ./inc/libtorch
 # Define the flags to pass to the compiler
 CXXFLAGS = -std=c++17 -Wall -g -pthread -I./inc -I./inc/hog2/graph -I./inc/hog2/envutil -I./inc/hog2/environments \
  -I./inc/hog2/utils -I./inc/hog2/abstraction -I./inc/hog2/simulation -I./inc/hog2/graphalgorithms -I./inc/hog2/generic \
- -I./inc/hog2/algorithms -I./inc/hog2/search -I./inc/hog2/gui -I$(LIBTORCH)/include -I$(LIBTORCH)/include/torch/csrc/api/include 
+ -I./inc/hog2/algorithms -I./inc/hog2/search -I./inc/hog2/gui -I$(LIBTORCH)/include -I$(LIBTORCH)/include/torch/csrc/api/include \
+ -I/usr/local/cuda-12.1/include
 
 # Library paths (where to find the libraries)
 CUDA_FLAGS := -L/usr/local/cuda-12.1/lib64 -lcudart
