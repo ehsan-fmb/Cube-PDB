@@ -48,7 +48,6 @@ def get_state(hash,corner_size=8):
 	return state.get_nn_input()
     	
 
-
 def readPDB(name):
 	
 	if not os.path.exists('pdbs/'+name+"/preprocessed.npy"):	
@@ -71,8 +70,8 @@ def readPDB(name):
 			while byte:				
 				first_part=depth//16
 				second_part=depth%16 
-				dataset.append([first_part,index])
-				dataset.append([second_part,index+1])
+				dataset.append([second_part,index])
+				dataset.append([first_part,index+1])
 				byte=f.read(1)
 				depth = int.from_bytes(byte, "big")
 				index+=2

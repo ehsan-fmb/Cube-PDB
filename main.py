@@ -77,52 +77,35 @@ def initialize_weights(m):
 
 if __name__ == "__main__":
     
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('-pdb_name')
-    # parser.add_argument('-task')
-    # parser.add_argument('-epochs')
-    # parser.add_argument('-lr')
-    # parser.add_argument('-batch_size')
-    # args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-pdb_name')
+    parser.add_argument('-task')
+    parser.add_argument('-epochs')
+    parser.add_argument('-lr')
+    parser.add_argument('-batch_size')
+    args = parser.parse_args()
     
-    # if args.task=="train":
+    if args.task=="train":
         
-    #     # load the dataset
-    #     dataset=readPDB(args.pdb_name)
-    #     print("dataset is loaded.")
+        # load the dataset
+        dataset=readPDB(args.pdb_name)
+        print("dataset is loaded.")
 
-    #     # initiate the models with xavier uniform weights
-    #     model=ResnetModel((3,3),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
-    #     model.apply(initialize_weights)
+        # initiate the models with xavier uniform weights
+        model=ResnetModel((3,3),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
+        model.apply(initialize_weights)
         
-    #     # start training
-    #     run(model,dataset,float(args.lr),int(float(args.epochs)),int(float(args.batch_size))
-    #         ,args.pdb_name,int(test_interval),accuracy_threshold,accuracy_decay)
+        # start training
+        run(model,dataset,float(args.lr),int(float(args.epochs)),int(float(args.batch_size))
+            ,args.pdb_name,int(test_interval),accuracy_threshold,accuracy_decay)
     
-    # elif args.task=="convert":
-    #     convert_model(args.pdb_name)
-    # elif args.task=="test":
-    #     evaluation(args.pdb_name)
-    # else:
-    #     raise ValueError("task is not defined.")
+    elif args.task=="convert":
+        convert_model(args.pdb_name)
+    elif args.task=="test":
+        evaluation(args.pdb_name)
+    else:
+        raise ValueError("task is not defined.")
 
-    state=State()
-    state.loc=[5, 4, 6, 0,2, 7, 1, 3]
-    state.orientation=[1, 1, 0, 0, 2, 2, 1, 2]
-    nn_input=torch.tensor(state.get_nn_input(),dtype=torch.float32,device=device)
-    nn_input=nn_input.unsqueeze(0)
 
-    print(nn_input.shape)
-
-    # load the model
-    model=ResnetModel((3,3),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
-    model.load_state_dict(torch.load("models/8-corners/"+'model.pth'))
-    model.to(device)
-    model.eval()
-    
-    output=model(nn_input)
-    probs=torch.softmax(output,1)
-    hcost=torch.argmax(probs)
-    print(hcost)
 
 

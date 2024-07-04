@@ -73,7 +73,6 @@ void Test(string method)
 	Timer timer;
 	cube.SetPruneSuccessors(true);
 	
-	
 	// load NN heuristic
 	torch::jit::script::Module module=load_model();
 	module.eval();
@@ -86,11 +85,10 @@ void Test(string method)
 	// load 8-corners pdb heuristic
 	vector<int> blank;
 	vector<int> corners;
-	string filename="../pdbs/8-corners/8-corners.pdb";
 	corners = {0, 1, 2, 3, 4, 5, 6, 7};
 	RubikPDB pdb(&cube, goal, blank, corners);
-	FILE *file = fopen(filename.c_str(), "r");
-	pdb.Load(file);
+	pdb.Load("../pdbs/8-corners/");
+	
 	Heuristic<RubiksState> h;
 	h.lookups.push_back({kMaxNode, 1, 1});
 	h.lookups.push_back({kLeafNode, 0, 0});

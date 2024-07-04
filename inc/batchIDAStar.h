@@ -335,22 +335,6 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 		int index=smallBatch.Add(input);
 		h = smallBatch.GetHcost(index);
 	}
-	else
-	{
-		// double h_test=heuristic->HCost(currState, goal);
-		
-		// overestimation
-		// if(h>h_test)
-		// {
-		// 	cout<<"pdb: "<<h_test<<endl;
-		// 	cout<<"HCost list: "<<h<<endl;
-		// 	cout<<"corners: ";
-		// 	for (int i = 0; i < 16; i++)
-        // 		cout << unsigned(currState.corner.state[i]) << " ";
-    	// 	cout << endl;
-		// 	cout<<"*********************************************"<<endl;
-		// }
-	}
 
 	if (fgreater(g+h, bound))
 	{
