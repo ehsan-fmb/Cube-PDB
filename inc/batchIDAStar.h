@@ -23,7 +23,7 @@
 const int smallbatchsize=30;
 const int largebatchsize=3000;
 const int smalltimeout=10;
-const int largetimeout=150;
+const int largetimeout=50;
 torch::Device device(torch::kCUDA,1);
 using namespace std;
 
