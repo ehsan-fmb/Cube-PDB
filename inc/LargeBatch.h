@@ -22,7 +22,7 @@ class LargeBatch {
 public:
 	LargeBatch(int size,int t);
 	~LargeBatch();
-	void Add(torch::Tensor input,int work,int counter);
+	void Add(const vector<torch::Tensor>& children,int work,const vector<batchUnit>& tempunits);
 	void IsFull();
 	void Empty();
 	vector<torch::Tensor> samples;
@@ -48,17 +48,15 @@ LargeBatch::~LargeBatch()
 }
 
 /* Adds item to queue, regardless of capacity.  */
-void LargeBatch::Add(torch::Tensor input,int work,int counter)
+void LargeBatch::Add(const vector<torch::Tensor>& children,int work,const vector<batchUnit>& tempunits)
 {
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait(l, [this](){return (!processing);});
-	samples.push_back(input);
-    batchUnit unit;
-    unit.index=counter;
-    unit.workNumber=work;
-    units.push_back(unit);
-
-    if(samples.size()==maxbatchsize)
+	
+	samples.insert(samples.end(),children.begin(),children.end());
+	units.insert(units.end(),tempunits.begin(),tempunits.end());
+	
+    if(samples.size()>=maxbatchsize)
     {	
 		processing=true;
 		Full.notify_all();
@@ -70,7 +68,7 @@ void LargeBatch::IsFull()
 {
 	processing=false;
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return samples.size()==maxbatchsize;});
+	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return samples.size()>=maxbatchsize;});
 	processing=true;
 }
 

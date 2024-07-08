@@ -21,9 +21,9 @@
 
 
 const int smallbatchsize=30;
-const int largebatchsize=5000;
-const int smalltimeout=50;
-const int largetimeout=800;
+const int largebatchsize=3000;
+const int smalltimeout=10;
+const int largetimeout=150;
 torch::Device device(torch::kCUDA,1);
 using namespace std;
 
@@ -67,10 +67,10 @@ private:
 					  action forbiddenAction, state &currState,
 					  vector<action> &thePath);
 	void UpdateNextBound(double currBound, double fCost);
-	torch::Tensor GetNNOutput(torch::Tensor samples);
-	double GetSavedHCost(int worknumber,int index);
-	void FeedSmallBatch(SmallBatch &batch);
-	void FeedLargeBatch(LargeBatch &batch);
+	torch::Tensor GetNNOutput(const torch::Tensor& samples);
+	double GetSavedHCost(int worknumber,int index,BatchworkUnit<action> &w);
+	void FeedSmallBatch();
+	void FeedLargeBatch();
 	int GetFaceColor(int face,state s);
 	void SetFrontiersHCost(environment *env);
 	torch::Tensor GetNNInput(state s);
@@ -79,7 +79,7 @@ private:
 	Heuristic<state> *heuristic;
 	mutable std::mutex modelLock;
 	mutable std::mutex modelTestLock;
-	mutable std::mutex HCostListLock;
+	mutable std::shared_mutex HCostListLock;
 	torch::jit::script::Module *model;
 	torch::jit::script::Module *model_test;
 	vector<uint64_t> gCostHistogram;
@@ -96,6 +96,9 @@ private:
 	LargeBatch largeBatch;
 	int foundSolution;
     bool finishAfterSolution;
+	bool stopfeeder;
+	Timer timer;
+	int feedcounter,totalsize,smallcounter,largecounter;
 };
 
 
@@ -155,7 +158,7 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 														  vector<action> &thePath)
 {
 	
-	const auto numThreads = thread::hardware_concurrency();
+	const auto numThreads = thread::hardware_concurrency()-2;
 	cout<<"number of threads: "<<numThreads<<endl;
 	
 	nextBound = 0;
@@ -187,8 +190,13 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 	// SetFrontiersHCost(env);
 	
 	// define two threads that feed the nn with samll and large batches 
-	thread smallBatchFeeder(&BatchIDAStar<environment, state, action>::FeedSmallBatch, this,ref(smallBatch));
-	thread largeBatchFeeder(&BatchIDAStar<environment, state, action>::FeedLargeBatch, this,ref(largeBatch));
+	stopfeeder=false;
+	thread smallBatchFeeder(&BatchIDAStar<environment, state, action>::FeedSmallBatch, this);
+	thread largeBatchFeeder(&BatchIDAStar<environment, state, action>::FeedLargeBatch, this);
+	feedcounter=0;
+	totalsize=0;
+	smallcounter=0;
+	largecounter=0;
 
 	while (foundSolution > work.size())
 	{
@@ -203,12 +211,19 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 		fCostHistogram.resize(nextBound+1);
 		threads.resize(0);
 		
+		timer.EndTimer();
+		printf("%1.2f elapsed\n", timer.GetElapsedTime());
+		cout<<"counter for feeder: "<<feedcounter<<endl;
+		cout<<"totalsize of list: "<<totalsize<<endl;
+		cout<<"query from large batch: "<<largecounter<<endl;
+		cout<<"query from small batch: "<<smallcounter<<endl;
 		printf("Starting iteration with bound %f; %" PRId64 " expanded, %" PRId64 " generated\n", nextBound, nodesExpanded, nodesTouched);
 		fflush(stdout);
+		timer.StartTimer();
 
 		// erase frontiers if nextbound is greater than maximum fcost of frontiers
-		if (nextBound>frontiersmaxfcost && (! frontiers.empty()))
-			frontiers.clear();
+		// if (nextBound>frontiersmaxfcost && (! frontiers.empty()))
+		// 	frontiers.clear();
 		
 		for (size_t x = 0; x < work.size(); x++)
 		{
@@ -246,7 +261,12 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 		}
 		nextBound = bestBound;
 		if (thePath.size() != 0)
-			return;
+			{
+				stopfeeder=true;
+				largeBatchFeeder.join();
+				smallBatchFeeder.join();
+				return;
+			}
 	}
 }
 
@@ -328,13 +348,19 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 															  BatchworkUnit<action> &w, vectorCache<action> &cache,int node_index)
 {
 	
-	double h=GetSavedHCost(w.unitNumber,node_index);
+	double h=GetSavedHCost(w.unitNumber,node_index,w);
 	if(h==-1)
 	{
 		torch::Tensor input=GetNNInput(currState);
 		int index=smallBatch.Add(input);
 		h = smallBatch.GetHcost(index);
+		smallcounter++;
 	}
+	else
+		largecounter++;
+	
+	// To get pdb results
+	h=heuristic->HCost(currState, goal);
 
 	if (fgreater(g+h, bound))
 	{
@@ -361,22 +387,31 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 	w.gHistogram[g]++;
 	w.fHistogram[g+h]++;
 
-
 	// save nodes in large list to get their values when search
 	// is back to upper levels
 	vector<int> indexes;
+	vector<torch::Tensor>children;
+	vector<batchUnit>units;
 	for (unsigned int x = 0; x < actions.size(); x++)
 	{
 		if (actions[x] == forbiddenAction) 
 			continue;
 		
-		indexes.push_back(w.nodeCount);
 		env->ApplyAction(currState, actions[x]);
-		largeBatch.Add(GetNNInput(currState),w.unitNumber,w.nodeCount);
+
+		indexes.push_back(w.nodeCount);
+		batchUnit unit;
+		unit.index=w.nodeCount;
+		unit.workNumber=w.unitNumber;
+		children.push_back(GetNNInput(currState));
+		units.push_back(unit);
+		
 		env->UndoAction(currState, actions[x]);
 		w.nodeCount++;
 	}
-	
+	// add children to large batch
+	largeBatch.Add(children,w.unitNumber,units);
+
 	int j=0;
 	for (unsigned int x = 0; x < actions.size(); x++)
 	{
@@ -401,11 +436,72 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 
 
 template <class environment, class state, class action>
-double BatchIDAStar<environment, state, action>::GetSavedHCost(int worknumber,int index)
+double BatchIDAStar<environment, state, action>::GetSavedHCost(int worknumber,int index,BatchworkUnit<action> &w)
 {
-	std::lock_guard<std::mutex> l(HCostListLock);
+	std::shared_lock lock(HCostListLock);
 	double cost= (index < SavedHCosts[worknumber].size()) ? SavedHCosts[worknumber][index] : -1;
 	return cost;
+}
+
+template <class environment, class state, class action>
+torch::Tensor BatchIDAStar<environment, state, action>::GetNNOutput(const torch::Tensor& samples)
+{
+	std::lock_guard<std::mutex> l(modelLock);
+
+	// cout<<"smaples size: "<<samples.sizes()<<endl;
+	inputs.push_back(samples);
+	torch::Tensor outputs= model->forward(inputs).toTensor();
+	torch::Tensor probs=torch::softmax(outputs,1);
+	inputs=vector<torch::jit::IValue>();
+	// c10::cuda::CUDACachingAllocator::emptyCache();
+	return torch::argmax(probs,1);
+}
+
+template <class environment, class state, class action>
+void BatchIDAStar<environment, state, action>::FeedSmallBatch()
+{
+	while (!stopfeeder)
+	{
+		smallBatch.IsFull();
+		
+		if(!smallBatch.samples.empty())
+		{
+			// cout<<"size of small batch: "<<batch.samples.size()<<endl;
+			torch::Tensor h_values=GetNNOutput(torch::stack(smallBatch.samples));
+			smallBatch.Inform(h_values);
+		}
+	}
+	
+}
+
+template <class environment, class state, class action>
+void BatchIDAStar<environment, state, action>::FeedLargeBatch()
+{
+	while (!stopfeeder)
+	{
+		largeBatch.IsFull();
+
+		if(largeBatch.samples.empty())
+			continue;
+
+		// put values in their corresponding position in the list
+		torch::Tensor h_values=GetNNOutput(torch::stack(largeBatch.samples));
+		// cout<<"size of large batch: "<<batch.samples.size()<<endl;
+		{
+			std::unique_lock lock(HCostListLock);
+			feedcounter++;
+			totalsize=totalsize+largeBatch.samples.size();
+			for (size_t i = 0; i < largeBatch.units.size(); i++) 
+			{
+				batchUnit unit=largeBatch.units[i];
+				SavedHCosts[unit.workNumber].push_back(h_values[i].item<double>());
+			}
+		}
+		
+		// clear the batch
+		largeBatch.Empty();
+	}
+	
 }
 
 
@@ -457,135 +553,77 @@ void BatchIDAStar<environment, state, action>::SetFrontiersHCost(environment *en
 	frontiersmaxfcost=workDepth+maxhcost;
 }
 
-template <class environment, class state, class action>
-torch::Tensor BatchIDAStar<environment, state, action>::GetNNOutput(torch::Tensor samples)
-{
-	std::lock_guard<std::mutex> l(modelLock);
-	
-	samples=samples.to(device);
-	inputs.push_back(samples);
-	torch::Tensor outputs= model->forward(inputs).toTensor();
-	torch::Tensor probs=torch::softmax(outputs,1);
-	inputs=vector<torch::jit::IValue>();
-	c10::cuda::CUDACachingAllocator::emptyCache();
-	
-	return torch::argmax(probs,1);
-}
-
-template <class environment, class state, class action>
-void BatchIDAStar<environment, state, action>::FeedSmallBatch(SmallBatch &batch)
-{
-	while (true)
-	{
-		batch.IsFull();
-		
-		if(!batch.samples.empty())
-		{
-			torch::Tensor h_values=GetNNOutput(torch::stack(batch.samples));
-			batch.Inform(h_values);
-		}
-	}
-	
-}
-
-template <class environment, class state, class action>
-void BatchIDAStar<environment, state, action>::FeedLargeBatch(LargeBatch &batch)
-{
-	while (true)
-	{
-		batch.IsFull();
-
-		if(batch.samples.empty())
-			continue;
-	
-		// put values in their corresponding position in the list
-		torch::Tensor h_values=GetNNOutput(torch::stack(batch.samples));
-		
-		{
-			std::lock_guard<std::mutex> l(HCostListLock);
-			for (size_t i = 0; i < batch.units.size(); i++) 
-			{
-				batchUnit unit=batch.units[i];
-				SavedHCosts[unit.workNumber].push_back(h_values[i].item<double>());
-			}
-		}
-		
-		// clear the batch
-		batch.Empty();
-	}
-	
-}
-
 
 template <class environment, class state, class action>
 torch::Tensor BatchIDAStar<environment, state, action>::GetNNInput(state s)
 {
 	torch::Tensor input = torch::zeros({36,3,3});
+	input=input.to(device);
 
-	// color center and edge cubies
-	for(int i = 0; i < 6; i++)
-	{
-		input[7*i][1][1]=1;
-      	input[7*i][0][1]=input[7*i][1][0]=input[7*i][1][2]=input[7*i][2][1]=1;
-	}
+	// // color center and edge cubies
+	// for(int i = 0; i < 6; i++)
+	// {
+	// 	input[7*i][1][1]=1;
+    //   	input[7*i][0][1]=input[7*i][1][0]=input[7*i][1][2]=input[7*i][2][1]=1;
+	// }
 
-	// color corner cubies
-	for(int i = 0; i < 8; i++)
-	{
-		if(i==0)
-		{
-			input[GetFaceColor(0,s)][2][0]=1;
-        	input[12+GetFaceColor(2,s)][0][0]=1;
-        	input[24+GetFaceColor(1,s)][0][2]=1;
-		}
-		else if(i==1)
-		{
-			input[GetFaceColor(3,s)][2][2]=1;
-        	input[12+GetFaceColor(4,s)][0][2]=1;
-        	input[30+GetFaceColor(5,s)][0][0]=1;
-		}
-		else if(i==2)
-		{
-			input[GetFaceColor(6,s)][0][2]=1;
-        	input[30+GetFaceColor(7,s)][0][2]=1;
-        	input[18+GetFaceColor(8,s)][0][0]=1;
+	// // color corner cubies
+	// for(int i = 0; i < 8; i++)
+	// {
+	// 	if(i==0)
+	// 	{
+	// 		input[GetFaceColor(0,s)][2][0]=1;
+    //     	input[12+GetFaceColor(2,s)][0][0]=1;
+    //     	input[24+GetFaceColor(1,s)][0][2]=1;
+	// 	}
+	// 	else if(i==1)
+	// 	{
+	// 		input[GetFaceColor(3,s)][2][2]=1;
+    //     	input[12+GetFaceColor(4,s)][0][2]=1;
+    //     	input[30+GetFaceColor(5,s)][0][0]=1;
+	// 	}
+	// 	else if(i==2)
+	// 	{
+	// 		input[GetFaceColor(6,s)][0][2]=1;
+    //     	input[30+GetFaceColor(7,s)][0][2]=1;
+    //     	input[18+GetFaceColor(8,s)][0][0]=1;
 
-		}
-		else if(i==3)
-		{
-			input[GetFaceColor(9,s)][0][0]=1;
-        	input[24+GetFaceColor(11,s)][0][0]=1;
-        	input[18+GetFaceColor(10,s)][0][2]=1;
+	// 	}
+	// 	else if(i==3)
+	// 	{
+	// 		input[GetFaceColor(9,s)][0][0]=1;
+    //     	input[24+GetFaceColor(11,s)][0][0]=1;
+    //     	input[18+GetFaceColor(10,s)][0][2]=1;
 			
-		}
-		else if(i==4)
-		{
-			input[6+GetFaceColor(12,s)][0][0]=1;
-        	input[12+GetFaceColor(13,s)][2][0]=1;
-        	input[24+GetFaceColor(14,s)][2][2]=1;
+	// 	}
+	// 	else if(i==4)
+	// 	{
+	// 		input[6+GetFaceColor(12,s)][0][0]=1;
+    //     	input[12+GetFaceColor(13,s)][2][0]=1;
+    //     	input[24+GetFaceColor(14,s)][2][2]=1;
 			
-		}
-		else if(i==5)
-		{
-			input[6+GetFaceColor(15,s)][0][2]=1;
-        	input[12+GetFaceColor(17,s)][2][2]=1;
-        	input[30+GetFaceColor(16,s)][2][0]=1;
+	// 	}
+	// 	else if(i==5)
+	// 	{
+	// 		input[6+GetFaceColor(15,s)][0][2]=1;
+    //     	input[12+GetFaceColor(17,s)][2][2]=1;
+    //     	input[30+GetFaceColor(16,s)][2][0]=1;
 			
-		}
-		else if(i==6)
-		{
-			input[6+GetFaceColor(18,s)][2][2]=1;
-        	input[30+GetFaceColor(20,s)][2][2]=1;
-        	input[18+GetFaceColor(19,s)][2][0]=1;
+	// 	}
+	// 	else if(i==6)
+	// 	{
+	// 		input[6+GetFaceColor(18,s)][2][2]=1;
+    //     	input[30+GetFaceColor(20,s)][2][2]=1;
+    //     	input[18+GetFaceColor(19,s)][2][0]=1;
 			
-		}
-		else
-		{
-			input[6+GetFaceColor(21,s)][2][0]=1;
-        	input[24+GetFaceColor(22,s)][2][0]=1;
-        	input[18+GetFaceColor(23,s)][2][2]=1;			
-		}
-	}
+	// 	}
+	// 	else
+	// 	{
+	// 		input[6+GetFaceColor(21,s)][2][0]=1;
+    //     	input[24+GetFaceColor(22,s)][2][0]=1;
+    //     	input[18+GetFaceColor(23,s)][2][2]=1;			
+	// 	}
+	// }
 
 	return input;
 

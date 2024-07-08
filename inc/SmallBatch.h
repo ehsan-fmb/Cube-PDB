@@ -16,7 +16,7 @@ class SmallBatch {
 public:
 	SmallBatch(int size,int t);
 	~SmallBatch();
-	int Add(torch::Tensor input);
+	int Add(const torch::Tensor& input);
 	void IsFull();
 	double GetHcost(int rank);
 	void Inform(torch::Tensor &costs);
@@ -46,12 +46,12 @@ SmallBatch::~SmallBatch()
 }
 
 /* Adds item to queue, regardless of capacity.  */
-int SmallBatch::Add(torch::Tensor input)
+int SmallBatch::Add(const torch::Tensor& input)
 {
 	std::unique_lock<std::mutex> l(lock);
 	ready.wait(l, [this](){return ((!costReady)&&(!processing));});
-	samples.push_back(input);
 
+	samples.push_back(input);
 	// notify batchfeeder if the batch is full
 	if(samples.size()==maxbatchsize)
 		Full.notify_one();
@@ -81,7 +81,7 @@ void SmallBatch::IsFull()
 {
 	processing=false;
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return samples.size()==maxbatchsize;});
+	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return samples.size()>=maxbatchsize;});
 	processing=true;
 }
 
@@ -92,9 +92,8 @@ void SmallBatch::Inform(torch::Tensor &costs)
 	hCosts=costs;
 	counter=0;
 	costReady=true;
-	processing=false;
-	ready.notify_all();
 	lock.unlock();
+	ready.notify_all();
 }
 
 #endif

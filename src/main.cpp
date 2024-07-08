@@ -78,8 +78,9 @@ void Test(string method)
 	module.eval();
 
 	// for test
-	torch::jit::script::Module module_test=load_model();
-	module_test.eval();
+	torch::jit::script::Module module_test;
+	// torch::jit::script::Module module_test=load_model();
+	// module_test.eval();
 
 
 	// load 8-corners pdb heuristic
@@ -94,7 +95,7 @@ void Test(string method)
 	h.lookups.push_back({kLeafNode, 0, 0});
 	h.heuristics.push_back(&pdb);
 
-	for (int x = 0; x < 100; x++)
+	for (int x = 1; x < 100; x++)
 	{
 		GetRubikStep14Instance(start, x);
 		
@@ -104,8 +105,7 @@ void Test(string method)
 			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida;
 			bida.SetNNHeuristic(&module);
 			bida.SetNNHeuristicTest(&module_test);	
-			bida.SetHeuristic(&h);
-			goal.Reset();	
+			bida.SetHeuristic(&h);	
 			timer.StartTimer();
 			bida.GetPath(&cube, start, goal, rubikPath);
 			timer.EndTimer();
