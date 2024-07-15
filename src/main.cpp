@@ -45,7 +45,7 @@ torch::jit::script::Module load_model()
 	//load the model
 	torch::jit::script::Module module;
     try {
-        module = torch::jit::load("../models/8-corners/model_traced.pt");
+        module = torch::jit::load("../models/cnn1-7c.pt");
     }
     catch (const c10::Error &e) {
         std::cerr << "error loading the model\n";

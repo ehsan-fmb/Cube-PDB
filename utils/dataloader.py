@@ -101,7 +101,7 @@ def readPDB(name):
 			dist=dict(sorted(dist.items()))
 			for key in dist: 
 				file.write("value: "+str(key)+"        number:  "+str(dist[key])+"\n")
-		
+	
 	
 	# open the dataset
 	dataset=np.load('pdbs/'+name+"/preprocessed.npy")

@@ -13,8 +13,8 @@
 #include "Timer.h"
 
 
-const int largebatchsize=1024;
-const int largetimeout=3;
+const int largebatchsize=10000;
+const int largetimeout=2;
 const int numNodesWork=30000;
 torch::Device device(torch::kCUDA,1);
 using namespace std;
@@ -62,8 +62,6 @@ private:
 	void GetNNOutput(const torch::Tensor& samples,torch::Tensor& h_values);
 	double GetSavedHCost(int ID,int index);
 	void FeedLargeBatch();
-	int GetFaceColor(int face,state s);
-	void GetNNInput(state s,torch::Tensor& input);
 	state goal;
 	double nextBound;
 	Heuristic<state> *heuristic;
@@ -76,10 +74,10 @@ private:
 	vector<BatchworkUnit<action>> work;
 	vector<thread*> threads;
 	vector<int>SavedHCosts;
-	torch::Tensor outputs;
+	torch::Tensor outputs,tmp_hcosts;
 	vector<torch::jit::IValue> inputs;
 	SharedQueue<int> q;
-	LargeBatch largeBatch;
+	LargeBatch<state> largeBatch;
 	int foundSolution;
     bool finishAfterSolution;
 	bool stopfeeder;
@@ -140,7 +138,7 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 														  state from, state to,
 														  vector<action> &thePath)
 {
-	const auto numThreads = thread::hardware_concurrency();
+	const auto numThreads = thread::hardware_concurrency()-1;
 	cout<<"number of threads: "<<numThreads<<endl;
 	
 	nextBound = 0;
@@ -304,10 +302,10 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 															  BatchworkUnit<action> &w, vectorCache<action> &cache,int node_index, int threadID)
 {
 	
-	// double h=double(GetSavedHCost(threadID,node_index));
+	double h=double(GetSavedHCost(threadID,node_index));
 
 	// To get pdb results
-	double h=heuristic->HCost(currState, goal);
+	h=heuristic->HCost(currState, goal);
 
 	if (fgreater(g+h, bound))
 	{
@@ -337,8 +335,7 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 	// save nodes in large list to get their values when search
 	// is back to upper levels
 	vector<int> indexes;
-	vector<torch::Tensor>children;
-	vector<batchUnit>units;
+	vector<state>children;
 	for (unsigned int x = 0; x < actions.size(); x++)
 	{
 		if (actions[x] == forbiddenAction) 
@@ -349,17 +346,11 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 		w.nodeCount++;
 		indexes.push_back(w.nodeCount);
 
-		batchUnit unit;
-		torch::Tensor input;
-		unit.index=w.nodeCount;
-		unit.workNumber=threadID;
-		GetNNInput(currState,input);
-		children.push_back(input);
-		units.push_back(unit);
+		children.push_back(currState);
 		
 		env->UndoAction(currState, actions[x]);
 	}
-	largeBatch.Add(children,units);
+	largeBatch.Add(children,threadID,indexes);
 
 	int j=0;
 	for (unsigned int x = 0; x < actions.size(); x++)
@@ -386,7 +377,6 @@ void BatchIDAStar<environment, state, action>::DoIteration(environment *env,
 template <class environment, class state, class action>
 double BatchIDAStar<environment, state, action>::GetSavedHCost(int ID,int index)
 {
-	std::lock_guard<std::mutex> lock(HCostListLock);
 	return SavedHCosts[ID*numNodesWork+index];
 }
 
@@ -395,8 +385,6 @@ void BatchIDAStar<environment, state, action>::GetNNOutput(const torch::Tensor& 
 {
 	inputs.resize(0);
 	inputs.push_back(samples);
-	// cout<<"size of samples: "<<samples.sizes()<<endl;
-	// inputs.push_back(torch::zeros({1000,36,3,3}).to(device));
 	outputs= model.forward(inputs).toTensor();
 	outputs=torch::softmax(outputs,1);
 	h_values= torch::argmax(outputs,1);
@@ -407,31 +395,25 @@ void BatchIDAStar<environment, state, action>::FeedLargeBatch()
 {
 	while (!stopfeeder)
 	{
-		torch::Tensor samples;
-		vector<batchUnit> units;
-		bool full=largeBatch.IsFull(samples,units);
+		
+		bool full=largeBatch.IsFull();
 
-		// if(!full)
-		// 	continue;
+		if(!full)
+			continue;
 
-		// {
-		// 	std::lock_guard<std::mutex> lock(HCostListLock);
-				
-		// 	// get hcosts from nn and copy units from largebatch
-		// 	torch::Tensor h_values;
-		// 	GetNNOutput(samples.to(device),h_values);
-		// 	h_values=h_values.to(torch::kCPU);
-			
-		// 	feedcounter++;
-		// 	totalsize=totalsize+units.size();
-		// 	for (size_t i = 0; i < units.size(); i++) 
-		// 	{
-		// 		batchUnit unit=units[i];
-		// 		// SavedHCosts[unit.workNumber*numNodesWork+unit.index]=2;
-		// 		SavedHCosts[unit.workNumber*numNodesWork+unit.index]=h_values[i].item<int>();
-		// 	}
-		// }
+		// get hcosts from nn and copy units from largebatch
+		GetNNOutput(largeBatch.samples.to(device),largeBatch.h_values);
+		tmp_hcosts=largeBatch.h_values.to(torch::kCPU);
+		
+		feedcounter++;
+		totalsize=totalsize+largeBatch.units.size();
+		for (size_t i = 0; i <5000; i++)
+		{
+			batchUnit& unit=largeBatch.units[i];
+			SavedHCosts[unit.workNumber*numNodesWork+unit.index]=tmp_hcosts[i].item<int>();
+		}
 
+		largeBatch.Empty();
 	}
 	
 }
@@ -449,141 +431,5 @@ void BatchIDAStar<environment, state, action>::UpdateNextBound(double currBound,
 		nextBound = fCost;
 	}
 }
-
-
-template <class environment, class state, class action>
-void BatchIDAStar<environment, state, action>::GetNNInput(state s,torch::Tensor& input)
-{
-	input = torch::zeros({36,3,3});
-
-	// // color center and edge cubies
-	// for(int i = 0; i < 6; i++)
-	// {
-	// 	input[7*i][1][1]=1;
-    //   	input[7*i][0][1]=input[7*i][1][0]=input[7*i][1][2]=input[7*i][2][1]=1;
-	// }
-
-	// // color corner cubies
-	// for(int i = 0; i < 8; i++)
-	// {
-	// 	if(i==0)
-	// 	{
-	// 		input[GetFaceColor(0,s)][2][0]=1;
-    //     	input[12+GetFaceColor(2,s)][0][0]=1;
-    //     	input[24+GetFaceColor(1,s)][0][2]=1;
-	// 	}
-	// 	else if(i==1)
-	// 	{
-	// 		input[GetFaceColor(3,s)][2][2]=1;
-    //     	input[12+GetFaceColor(4,s)][0][2]=1;
-    //     	input[30+GetFaceColor(5,s)][0][0]=1;
-	// 	}
-	// 	else if(i==2)
-	// 	{
-	// 		input[GetFaceColor(6,s)][0][2]=1;
-    //     	input[30+GetFaceColor(7,s)][0][2]=1;
-    //     	input[18+GetFaceColor(8,s)][0][0]=1;
-
-	// 	}
-	// 	else if(i==3)
-	// 	{
-	// 		input[GetFaceColor(9,s)][0][0]=1;
-    //     	input[24+GetFaceColor(11,s)][0][0]=1;
-    //     	input[18+GetFaceColor(10,s)][0][2]=1;
-			
-	// 	}
-	// 	else if(i==4)
-	// 	{
-	// 		input[6+GetFaceColor(12,s)][0][0]=1;
-    //     	input[12+GetFaceColor(13,s)][2][0]=1;
-    //     	input[24+GetFaceColor(14,s)][2][2]=1;
-			
-	// 	}
-	// 	else if(i==5)
-	// 	{
-	// 		input[6+GetFaceColor(15,s)][0][2]=1;
-    //     	input[12+GetFaceColor(17,s)][2][2]=1;
-    //     	input[30+GetFaceColor(16,s)][2][0]=1;
-			
-	// 	}
-	// 	else if(i==6)
-	// 	{
-	// 		input[6+GetFaceColor(18,s)][2][2]=1;
-    //     	input[30+GetFaceColor(20,s)][2][2]=1;
-    //     	input[18+GetFaceColor(19,s)][2][0]=1;
-			
-	// 	}
-	// 	else
-	// 	{
-	// 		input[6+GetFaceColor(21,s)][2][0]=1;
-    //     	input[24+GetFaceColor(22,s)][2][0]=1;
-    //     	input[18+GetFaceColor(23,s)][2][2]=1;			
-	// 	}
-	// }
-
-}
-
-template <class environment, class state, class action>
-int BatchIDAStar<environment, state, action>::GetFaceColor(int face,state s)
-{
-	uint8_t cube = s.corner.state[face/3]; 
-    uint8_t rot =  s.corner.state[8+cube]; 
-    uint8_t result= cube*3+(3+(face%3)-rot)%3;
-
-	int thecolor=-1;
-    if (result==0)
-      thecolor=0;
-    else if (result==1)
-      thecolor=4;
-    else if (result==2)
-      thecolor=2;
-    else if (result==3)
-      thecolor=0;
-    else if (result==4)
-      thecolor=2;
-    else if (result==5)
-      thecolor=5;
-    else if (result==6)
-      thecolor=0;
-    else if (result==7)
-      thecolor=5;
-    else if (result==8)
-      thecolor=3;
-    else if (result==9)
-      thecolor=0;
-    else if (result==10)
-      thecolor=3;
-    else if (result==11)
-      thecolor=4;
-    else if (result==12)
-      thecolor=1;
-    else if (result==13)
-      thecolor=2;
-    else if (result==14)
-      thecolor=4;
-    else if (result==15)
-      thecolor=1;
-    else if (result==16)
-      thecolor=5;
-    else if (result==17)
-      thecolor=2;
-    else if (result==18)
-      thecolor=1;
-    else if (result==19)
-      thecolor=3;
-    else if (result==20)
-      thecolor=5;
-    else if (result==21)
-      thecolor=1;
-    else if (result==22)
-      thecolor=4;
-    else if (result==23)
-      thecolor=3;
-    else
-		throw logic_error("we cannot assign the color.");
-          
-    return thecolor;
-}
-
 
 #endif
