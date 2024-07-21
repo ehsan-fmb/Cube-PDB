@@ -285,7 +285,6 @@ void SingleIDAStar<environment, state, action>::DoIteration(environment *env,
 															  workUnit<action> &w, vectorCache<action> &cache)
 {
 	
-    
     torch::Tensor input=GetNNInput(currState);
     input=torch::unsqueeze(input,0);
     torch::Tensor h_value = GetNNOutput(input);

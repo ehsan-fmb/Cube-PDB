@@ -29,9 +29,10 @@ public:
 	void GetNNInput(state s,torch::Tensor& input);
 	torch::Tensor samples,h_values;
 	vector<batchUnit> units;
+	int mark;
 
 private:
-	int maxbatchsize,mark;
+	int maxbatchsize;
 	bool processing;
 	int timeout;
 	mutable std::mutex lock;
@@ -40,7 +41,7 @@ private:
 
 template <class state>
 LargeBatch<state>::LargeBatch(int size,int t)
-:maxbatchsize(size),timeout(t),processing(false),samples(torch::zeros({10000, 7, 4, 4})),mark(0)
+:maxbatchsize(size),timeout(t),processing(false),samples(torch::zeros({size+100, 7, 4, 4})),mark(0)
 {	
 	units.resize(size+100);
 }
@@ -58,11 +59,9 @@ void LargeBatch<state>::Add(vector<state>& cubestates, int& threadID, vector<int
 	
 	for(unsigned int i = 0; i < indexes.size(); i++)
   	{
-    	// add new batchunits to units
-		batchUnit unit;
-		unit.index=indexes[i];
-		unit.workNumber=threadID;
-		units[mark+i]=unit;
+    	// change batchunits in units
+		units[mark+i].index=indexes[i];
+		units[mark+i].workNumber=threadID;
 
 		// edit samples with new states
   	}
@@ -71,6 +70,7 @@ void LargeBatch<state>::Add(vector<state>& cubestates, int& threadID, vector<int
 
     if(mark>=maxbatchsize)
     {	
+		processing=true;
 		Full.notify_all();
 	}
 
@@ -83,7 +83,7 @@ bool LargeBatch<state>::IsFull()
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return mark>=maxbatchsize;});
 	
-	if(!units.empty())
+	if(mark>0)
 		return true;
 	else
 		return false;
