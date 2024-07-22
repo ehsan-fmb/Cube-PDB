@@ -2,105 +2,141 @@
 #define LARGEBATCH_H
 
 #include <iostream>
-#include <atomic>
 #include <mutex>
-#include <deque>
 #include <memory>
 #include <condition_variable>
 #include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
 
 using namespace std;
+const int lengthEpsilon=100;
+const int batchSizeEpsilon=500;
+const float timeoutEpsilon=0.15;
 
 struct batchUnit {
 	int index;
 	int workNumber;
 };
 
-template <class state>
+template <class action>
+struct BatchworkUnit {
+	action pre[workDepth];
+	vector<action> solution;
+	vector<int> gHistogram;
+	vector<int> fHistogram;
+	double nextBound;
+	uint64_t expanded, touched;
+	int unitNumber;
+	int nodeCount;
+	bool processing;
+	int ID;
+};
+
+template <class state,class action>
 class LargeBatch {
 public:
-	LargeBatch(int size,int t);
+	LargeBatch(int size,int t,int numworks);
 	~LargeBatch();
-	void Add(vector<state>& cubestates, int& threadID, vector<int>& indexes);
+	void Add(vector<state>& cubestates, vector<int>& indexes, BatchworkUnit<action>* work);
+	void UpdateTimer(float t);
 	bool IsFull();
 	void Empty();
 	int GetFaceColor(int face,state s);
 	void GetNNInput(state s,torch::Tensor& input);
 	torch::Tensor samples,h_values;
 	vector<batchUnit> units;
+	vector<BatchworkUnit<action>*> worksInProcess;
 	int mark;
 
 private:
 	int maxbatchsize;
-	bool processing;
+	bool receive,firstHit;
 	int timeout;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
 };
 
-template <class state>
-LargeBatch<state>::LargeBatch(int size,int t)
-:maxbatchsize(size),timeout(t),processing(false),samples(torch::zeros({size+100, 7, 4, 4})),mark(0)
+template <class state, class action>
+LargeBatch<state,action>::LargeBatch(int size,int t,int numworks)
+:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, 7, 4, 4})),mark(0),receive(true),firstHit(false)
 {	
-	units.resize(size+100);
+	units.resize(size+lengthEpsilon);
+	worksInProcess.reserve(numworks);
 }
 
-template <class state>
-LargeBatch<state>::~LargeBatch()
+template <class state, class action>
+LargeBatch<state,action>::~LargeBatch()
 {
 }
 
-template <class state>
-void LargeBatch<state>::Add(vector<state>& cubestates, int& threadID, vector<int>& indexes)
+template <class state, class action>
+void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int>& indexes, BatchworkUnit<action>* work)
 {
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait(l, [this](){return (mark<maxbatchsize);});
+	Full.wait(l, [this](){return receive;});
 	
 	for(unsigned int i = 0; i < indexes.size(); i++)
   	{
     	// change batchunits in units
 		units[mark+i].index=indexes[i];
-		units[mark+i].workNumber=threadID;
+		units[mark+i].workNumber=work->ID;
 
 		// edit samples with new states
   	}
 
 	mark=mark+indexes.size();
+	work->processing=true;
+	worksInProcess.push_back(work);
 
     if(mark>=maxbatchsize)
     {	
-		processing=true;
+		firstHit=true;
+		receive=false;
 		Full.notify_all();
 	}
 
 }
 
-
-template <class state>
-bool LargeBatch<state>::IsFull()
+template <class state, class action>
+bool LargeBatch<state,action>::IsFull()
 {
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return mark>=maxbatchsize;});
+	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return (mark>=maxbatchsize);});
 	
 	if(mark>0)
+	{
+		if(timeout>timeoutEpsilon&& mark<batchSizeEpsilon && firstHit)
+		{
+			timeout=timeoutEpsilon;
+		}	
+		receive=false;
 		return true;
+	}	
 	else
 		return false;
-
 }
 
-template <class state>
-void LargeBatch<state>::Empty()
+
+template <class state, class action>
+void LargeBatch<state,action>::UpdateTimer(float t)
+{
+	timeout=t;
+}
+
+
+template <class state, class action>
+void LargeBatch<state,action>::Empty()
 {
 	lock.lock();
 	mark=0;
+	receive=true;
+	worksInProcess.clear();
 	lock.unlock();
 	Full.notify_all();
 }
 
-template <class state>
-void LargeBatch<state>::GetNNInput(state s,torch::Tensor& input)
+template <class state, class action>
+void LargeBatch<state,action>::GetNNInput(state s,torch::Tensor& input)
 {
 	input = torch::zeros({36,3,3});
 
@@ -171,8 +207,8 @@ void LargeBatch<state>::GetNNInput(state s,torch::Tensor& input)
 
 }
 
-template <class state>
-int LargeBatch<state>::GetFaceColor(int face,state s)
+template <class state, class action>
+int LargeBatch<state,action>::GetFaceColor(int face,state s)
 {
 	uint8_t cube = s.corner.state[face/3]; 
     uint8_t rot =  s.corner.state[8+cube]; 

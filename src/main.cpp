@@ -94,6 +94,9 @@ void Test(string method)
 	h.lookups.push_back({kLeafNode, 0, 0});
 	h.heuristics.push_back(&pdb);
 
+
+	const auto numThreads = thread::hardware_concurrency()-1;
+
 	for (int x = 1; x < 2; x++)
 	{
 		GetRubikStep14Instance(start, x);
@@ -101,7 +104,7 @@ void Test(string method)
 		if (method=="Batch")
 		{
 			printf("-=-=-BPIDA*-=-=-\n");
-			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida;
+			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
 			bida.SetNNHeuristic(module);
 			bida.SetNNHeuristicTest(module_test);	
 			bida.SetHeuristic(&h);	
