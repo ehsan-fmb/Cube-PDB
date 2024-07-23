@@ -15,9 +15,9 @@
 
 
 const int largebatchsize=4000;
-const float largetimeout=1;
+const int largetimeout=500;
 const int numNodesWork=50000;
-const int stackNum=15;
+const int stackNum=30;
 torch::Device device(torch::kCUDA,1);
 using namespace std;
 
@@ -473,34 +473,40 @@ void BatchIDAStar<environment, state, action>::FeedLargeBatch()
 {
 	while (!stopfeeder)
 	{
-		bool full=largeBatch.IsFull();
+		int wStart,uStart,wLength,uLength;
+		bool full=largeBatch.IsFull(wStart,uStart,wLength,uLength);
 		
 		if(!full)
 			continue;
 
-		// cout<<"size of samples:"<<largeBatch.mark<<endl;
+		largeBatch.Empty();
+		
 		// get hcosts from nn and copy units from largebatch
+		// cout<<"size of samples: "<<uLength<<endl;
+		// cout<<":size of works:"<<wLength<<endl;
+		// cout<<"***************************"<<endl;
 		GetNNOutput(largeBatch.samples.to(device),largeBatch.h_values);
 		tmp_hcosts=largeBatch.h_values.to(torch::kCPU);
 		
 		// --> This part is verified. It is commented because we should 
 		// --> improve it. 
-		// feedcounter++;
-		// totalsize=totalsize+largeBatch.mark;
-		// for (size_t i = 0; i <largeBatch.mark; i++)
-		// {
-		// 	batchUnit& unit=largeBatch.units[i];
-		// 	SavedHCosts[unit.workNumber*numNodesWork+unit.index]=tmp_hcosts[i].item<int>();
-		// }
-
-		// --> This part is to enable works to continue
-		for (size_t i = 0; i <largeBatch.worksInProcess.size(); i++)
+		feedcounter++;
+		totalsize=totalsize+largeBatch.mark;
+		for (size_t i = 0; i <uLength; i++)
 		{
-			std::unique_lock<std::mutex> lock(workLocks[largeBatch.worksInProcess[i]->ID]);
-			largeBatch.worksInProcess[i]->processing=false;
+			
+			//units
+			batchUnit& unit=largeBatch.units[uStart+i];
+			SavedHCosts[unit.workNumber*numNodesWork+unit.index]=tmp_hcosts[i].item<int>();
+		
+			//works
+			if(i<wLength)
+			{
+				std::unique_lock<std::mutex> lock(workLocks[largeBatch.worksInProcess[wStart+i]->ID]);
+				largeBatch.worksInProcess[wStart+i]->processing=false;	
+			}
+		
 		}
-
-		largeBatch.Empty();
 
 	}
 	

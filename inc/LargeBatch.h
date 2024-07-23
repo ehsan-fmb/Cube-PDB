@@ -11,7 +11,7 @@
 using namespace std;
 const int lengthEpsilon=100;
 const int batchSizeEpsilon=500;
-const float timeoutEpsilon=0.15;
+const int timeoutEpsilon=150;
 
 struct batchUnit {
 	int index;
@@ -38,30 +38,30 @@ public:
 	LargeBatch(int size,int t,int numworks);
 	~LargeBatch();
 	void Add(vector<state>& cubestates, vector<int>& indexes, BatchworkUnit<action>* work);
-	void UpdateTimer(float t);
-	bool IsFull();
+	void UpdateTimer(int t);
+	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
 	void Empty();
 	int GetFaceColor(int face,state s);
 	void GetNNInput(state s,torch::Tensor& input);
 	torch::Tensor samples,h_values;
 	vector<batchUnit> units;
 	vector<BatchworkUnit<action>*> worksInProcess;
-	int mark;
+	int mark,workMark;
 
 private:
-	int maxbatchsize;
-	bool receive,firstHit;
-	int timeout;
+	int maxbatchsize,whichBatch,worksNum,timeout;;
+	vector<bool> receives;
+	bool firstHit;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
 };
 
 template <class state, class action>
-LargeBatch<state,action>::LargeBatch(int size,int t,int numworks)
-:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, 7, 4, 4})),mark(0),receive(true),firstHit(false)
+LargeBatch<state,action>::LargeBatch(int size,int t,int nw)
+:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, 7, 4, 4})),mark(0),workMark(0),firstHit(false),worksNum(nw),receives{true,false}
 {	
-	units.resize(size+lengthEpsilon);
-	worksInProcess.reserve(numworks);
+	units.resize((size+lengthEpsilon)*2);
+	worksInProcess.resize(nw*2);
 }
 
 template <class state, class action>
@@ -73,43 +73,58 @@ template <class state, class action>
 void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int>& indexes, BatchworkUnit<action>* work)
 {
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait(l, [this](){return receive;});
+	Full.wait(l, [this](){return (receives[0] || receives[1]) ;});
 	
+	if(receives[0])
+		whichBatch=0;
+	else
+		whichBatch=1;
+	
+	int unitsIndex=whichBatch*(maxbatchsize+lengthEpsilon);
+	int worksIndex=whichBatch*worksNum;
 	for(unsigned int i = 0; i < indexes.size(); i++)
-  	{
-    	// change batchunits in units
-		units[mark+i].index=indexes[i];
-		units[mark+i].workNumber=work->ID;
+	{
+		// change batchunits in units
+		units[unitsIndex+mark+i].index=indexes[i];
+		units[unitsIndex+mark+i].workNumber=work->ID;
 
 		// edit samples with new states
-  	}
-
+	}
+	worksInProcess[worksIndex+workMark]=work;
+	
+	
 	mark=mark+indexes.size();
+	workMark++;
 	work->processing=true;
-	worksInProcess.push_back(work);
 
     if(mark>=maxbatchsize)
     {	
 		firstHit=true;
-		receive=false;
+		receives[whichBatch]=false;
 		Full.notify_all();
 	}
 
 }
 
 template <class state, class action>
-bool LargeBatch<state,action>::IsFull()
+bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& uLength)
 {
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait_for(l, std::chrono::milliseconds(timeout), [this](){return (mark>=maxbatchsize);});
+	Full.wait_for(l, std::chrono::microseconds(timeout), [this](){return (mark>=maxbatchsize);});
 	
 	if(mark>0)
 	{
 		if(timeout>timeoutEpsilon&& mark<batchSizeEpsilon && firstHit)
 		{
 			timeout=timeoutEpsilon;
-		}	
-		receive=false;
+		}
+		
+		receives[whichBatch]=false;
+
+		wStart=whichBatch*worksNum;
+		uStart=whichBatch*(maxbatchsize+lengthEpsilon);
+		wLength=workMark;
+		uLength=mark;	
 		return true;
 	}	
 	else
@@ -118,7 +133,7 @@ bool LargeBatch<state,action>::IsFull()
 
 
 template <class state, class action>
-void LargeBatch<state,action>::UpdateTimer(float t)
+void LargeBatch<state,action>::UpdateTimer(int t)
 {
 	timeout=t;
 }
@@ -129,8 +144,9 @@ void LargeBatch<state,action>::Empty()
 {
 	lock.lock();
 	mark=0;
-	receive=true;
-	worksInProcess.clear();
+	workMark=0;
+	whichBatch=(whichBatch+1)%2;
+	receives[whichBatch]=true;
 	lock.unlock();
 	Full.notify_all();
 }
