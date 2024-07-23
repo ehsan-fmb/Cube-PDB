@@ -11,7 +11,7 @@
 using namespace std;
 const int lengthEpsilon=100;
 const int batchSizeEpsilon=500;
-const int timeoutEpsilon=150;
+const int timeoutEpsilon=50;
 
 struct batchUnit {
 	int index;
@@ -37,14 +37,14 @@ class LargeBatch {
 public:
 	LargeBatch(int size,int t,int numworks);
 	~LargeBatch();
-	void Add(vector<state>& cubestates, vector<int>& indexes, BatchworkUnit<action>* work);
+	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work);
 	void UpdateTimer(int t);
 	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
 	void Empty();
 	int GetFaceColor(int face,state s);
 	void GetNNInput(state s,torch::Tensor& input);
 	torch::Tensor samples,h_values;
-	vector<batchUnit> units;
+	vector<int*> units;
 	vector<BatchworkUnit<action>*> worksInProcess;
 	int mark,workMark;
 
@@ -70,7 +70,7 @@ LargeBatch<state,action>::~LargeBatch()
 }
 
 template <class state, class action>
-void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int>& indexes, BatchworkUnit<action>* work)
+void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work)
 {
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait(l, [this](){return (receives[0] || receives[1]) ;});
@@ -85,8 +85,9 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int>& index
 	for(unsigned int i = 0; i < indexes.size(); i++)
 	{
 		// change batchunits in units
-		units[unitsIndex+mark+i].index=indexes[i];
-		units[unitsIndex+mark+i].workNumber=work->ID;
+		units[unitsIndex+mark+i]=indexes[i];
+		// units[unitsIndex+mark+i].index=indexes[i];
+		// units[unitsIndex+mark+i].workNumber=work->ID;
 
 		// edit samples with new states
 	}

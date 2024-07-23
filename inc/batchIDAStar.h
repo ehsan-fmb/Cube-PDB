@@ -14,8 +14,8 @@
 #include <cassert>
 
 
-const int largebatchsize=4000;
-const int largetimeout=500;
+const int largebatchsize=5000;
+const int largetimeout=100;
 const int numNodesWork=50000;
 const int stackNum=30;
 torch::Device device(torch::kCUDA,1);
@@ -195,7 +195,7 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 		cout<<"totalsize of list: "<<totalsize<<endl;
 		printf("Starting iteration with bound %f; %" PRId64 " expanded, %" PRId64 " generated\n", nextBound, nodesExpanded, nodesTouched);
 		fflush(stdout);
-		timer.StartTimer();
+		timer.StartTimer(); 
 		
 		for (size_t x = 0; x < work.size(); x++)
 		{
@@ -416,7 +416,7 @@ bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, sta
 
 	// save nodes in large list to get their values when search
 	// is back to upper levels
-	vector<int> indexes;
+	vector<int*> indexes;
 	vector<state>children;
 	for (unsigned int x = 0; x < actions.size(); x++)
 	{
@@ -434,7 +434,7 @@ bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, sta
 		unit.last=actions[x];
 		unit.gcost=g+edgeCost;
 		
-		indexes.push_back(w.nodeCount);
+		indexes.push_back(&SavedHCosts[w.ID*numNodesWork+w.nodeCount]);
 		children.push_back(currState);
 		nodes.push(unit);
 		
@@ -487,7 +487,7 @@ void BatchIDAStar<environment, state, action>::FeedLargeBatch()
 		// cout<<"***************************"<<endl;
 		GetNNOutput(largeBatch.samples.to(device),largeBatch.h_values);
 		tmp_hcosts=largeBatch.h_values.to(torch::kCPU);
-		
+		auto accessor=tmp_hcosts.accessor<long,1>();
 		// --> This part is verified. It is commented because we should 
 		// --> improve it. 
 		feedcounter++;
@@ -496,8 +496,7 @@ void BatchIDAStar<environment, state, action>::FeedLargeBatch()
 		{
 			
 			//units
-			batchUnit& unit=largeBatch.units[uStart+i];
-			SavedHCosts[unit.workNumber*numNodesWork+unit.index]=tmp_hcosts[i].item<int>();
+			*largeBatch.units[uStart+i]=accessor[i];
 		
 			//works
 			if(i<wLength)
