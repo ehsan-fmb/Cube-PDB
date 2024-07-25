@@ -7,16 +7,10 @@
 #include <condition_variable>
 #include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
+#include <cuda_runtime.h>
 
 using namespace std;
 const int lengthEpsilon=100;
-const int batchSizeEpsilon=500;
-const int timeoutEpsilon=50;
-
-struct batchUnit {
-	int index;
-	int workNumber;
-};
 
 template <class action>
 struct BatchworkUnit {
@@ -37,13 +31,17 @@ class LargeBatch {
 public:
 	LargeBatch(int size,int t,int numworks);
 	~LargeBatch();
-	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work);
+	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren);
 	void UpdateTimer(int t);
 	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
 	void Empty();
 	int GetFaceColor(int face,state s);
 	void GetNNInput(state s,torch::Tensor& input);
 	torch::Tensor samples,h_values;
+	torch::TensorOptions options;
+	torch::TensorOptions options_long;
+    torch::Tensor gpu_input;
+	cudaStream_t stream;
 	vector<int*> units;
 	vector<BatchworkUnit<action>*> worksInProcess;
 	int mark,workMark;
@@ -51,17 +49,22 @@ public:
 private:
 	int maxbatchsize,whichBatch,worksNum,timeout;;
 	vector<bool> receives;
-	bool firstHit;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
 };
 
 template <class state, class action>
 LargeBatch<state,action>::LargeBatch(int size,int t,int nw)
-:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, 7, 4, 4})),mark(0),workMark(0),firstHit(false),worksNum(nw),receives{true,false}
+:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, 7, 4, 4})),mark(0),workMark(0),worksNum(nw),receives{true,false}
 {	
 	units.resize((size+lengthEpsilon)*2);
 	worksInProcess.resize(nw*2);
+
+	options = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kFloat32);
+    options_long = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kInt64);
+	gpu_input = torch::empty({size+lengthEpsilon, 7,4,4}, options);
+	h_values = torch::empty({size+lengthEpsilon, 1}, options_long);
+	cudaStreamCreate(&stream);
 }
 
 template <class state, class action>
@@ -70,7 +73,7 @@ LargeBatch<state,action>::~LargeBatch()
 }
 
 template <class state, class action>
-void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work)
+void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren)
 {
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait(l, [this](){return (receives[0] || receives[1]) ;});
@@ -82,25 +85,21 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 	
 	int unitsIndex=whichBatch*(maxbatchsize+lengthEpsilon);
 	int worksIndex=whichBatch*worksNum;
-	for(unsigned int i = 0; i < indexes.size(); i++)
+	for(unsigned int i = 0; i < numChildren; i++)
 	{
 		// change batchunits in units
 		units[unitsIndex+mark+i]=indexes[i];
-		// units[unitsIndex+mark+i].index=indexes[i];
-		// units[unitsIndex+mark+i].workNumber=work->ID;
 
 		// edit samples with new states
 	}
 	worksInProcess[worksIndex+workMark]=work;
 	
-	
-	mark=mark+indexes.size();
+	mark=mark+numChildren;
 	workMark++;
 	work->processing=true;
 
     if(mark>=maxbatchsize)
     {	
-		firstHit=true;
 		receives[whichBatch]=false;
 		Full.notify_all();
 	}
@@ -115,11 +114,6 @@ bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& 
 	
 	if(mark>0)
 	{
-		if(timeout>timeoutEpsilon&& mark<batchSizeEpsilon && firstHit)
-		{
-			timeout=timeoutEpsilon;
-		}
-		
 		receives[whichBatch]=false;
 
 		wStart=whichBatch*worksNum;
@@ -131,14 +125,6 @@ bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& 
 	else
 		return false;
 }
-
-
-template <class state, class action>
-void LargeBatch<state,action>::UpdateTimer(int t)
-{
-	timeout=t;
-}
-
 
 template <class state, class action>
 void LargeBatch<state,action>::Empty()
@@ -285,6 +271,5 @@ int LargeBatch<state,action>::GetFaceColor(int face,state s)
           
     return thecolor;
 }
-
 
 #endif

@@ -27,16 +27,16 @@ void GetRubikStep14Instance(RubiksState &start, int which)
 	}
 
 	//print the state
-	cout<<"*********************************"<<endl;
-	cout << "corners: ";
-    for (int i = 0; i < 16; i++)
-        cout << unsigned(start.corner.state[i]) << " ";
-    cout << endl;
-	cout << "edges: ";
-    for (int i = 0; i < 24; i++)
-        cout << unsigned(start.edge.state[i]) << " ";
-    cout << endl;
-	cout<<"*********************************"<<endl;
+	// cout<<"*********************************"<<endl;
+	// cout << "corners: ";
+    // for (int i = 0; i < 16; i++)
+    //     cout << unsigned(start.corner.state[i]) << " ";
+    // cout << endl;
+	// cout << "edges: ";
+    // for (int i = 0; i < 24; i++)
+    //     cout << unsigned(start.edge.state[i]) << " ";
+    // cout << endl;
+	// cout<<"*********************************"<<endl;
 }
 
 torch::jit::script::Module load_model()
@@ -107,7 +107,8 @@ void Test(string method)
 			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
 			bida.SetNNHeuristic(module);
 			bida.SetNNHeuristicTest(module_test);	
-			bida.SetHeuristic(&h);	
+			bida.SetHeuristic(&h);
+			bida.InitializeList();	
 			timer.StartTimer();
 			bida.GetPath(&cube, start, goal, rubikPath);
 			timer.EndTimer();
