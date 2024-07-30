@@ -7,10 +7,17 @@
 #include <condition_variable>
 #include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
-#include <cuda_runtime.h>
 
 using namespace std;
 const int lengthEpsilon=100;
+const int channels=7;
+const int width=4;
+const int height=4;
+const int classNum=8;
+
+
+// gpu cores
+std::vector<torch::Device> devices = {torch::Device(torch::kCUDA, 0), torch::Device(torch::kCUDA, 1)};
 
 template <class action>
 struct BatchworkUnit {
@@ -24,47 +31,57 @@ struct BatchworkUnit {
 	int nodeCount;
 	bool processing;
 	int ID;
+	int checked;
+	int b;
 };
 
 template <class state,class action>
 class LargeBatch {
 public:
-	LargeBatch(int size,int t,int numworks);
+	LargeBatch(int size,int numworks);
 	~LargeBatch();
-	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren);
-	void UpdateTimer(int t);
-	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
-	void Empty();
-	int GetFaceColor(int face,state s);
-	void GetNNInput(state s,torch::Tensor& input);
-	torch::Tensor samples,h_values;
-	torch::TensorOptions options;
-	torch::TensorOptions options_long;
-    torch::Tensor gpu_input;
-	cudaStream_t stream;
+	bool Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren,int& batch,
+																int& sNum, int& wNum);
+	bool GetStuck(int& batch,int& sNum, int& wNum);
+	void Terminate(int& batch);
+	void Switch(int& batch);
+	vector<torch::TensorOptions> options;
+	vector<torch::TensorOptions> options_long;
+	vector<torch::Tensor> gpu_inputs,h_values,samples,outputs;
 	vector<int*> units;
 	vector<BatchworkUnit<action>*> worksInProcess;
 	int mark,workMark;
 
 private:
-	int maxbatchsize,whichBatch,worksNum,timeout;;
-	vector<bool> receives;
+	int maxbatchsize,worksNum,whichBatch;
+	vector<bool> receives,dones;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
 };
 
 template <class state, class action>
-LargeBatch<state,action>::LargeBatch(int size,int t,int nw)
-:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, 7, 4, 4})),mark(0),workMark(0),worksNum(nw),receives{true,false}
+LargeBatch<state,action>::LargeBatch(int size,int nw)
+:maxbatchsize(size),mark(0),workMark(0),worksNum(nw),receives{true,false},dones{false,true}
 {	
 	units.resize((size+lengthEpsilon)*2);
 	worksInProcess.resize(nw*2);
 
-	options = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kFloat32);
-    options_long = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kInt64);
-	gpu_input = torch::empty({size+lengthEpsilon, 7,4,4}, options);
-	h_values = torch::empty({size+lengthEpsilon, 1}, options_long);
-	cudaStreamCreate(&stream);
+	for(unsigned int x = 0; x < devices.size(); x++)
+	{
+		options.push_back(torch::TensorOptions().device(devices[x]).dtype(torch::kFloat32));
+		options_long.push_back(torch::TensorOptions().device(devices[x]).dtype(torch::kInt64));
+	}
+	
+	for(unsigned int x = 0; x < devices.size(); x++)
+	{
+		samples.push_back(torch::zeros({size+lengthEpsilon, channels, width, height}));
+
+		gpu_inputs.push_back(torch::empty({size+lengthEpsilon, channels,width,height}, options[x]));
+		outputs.push_back(torch::empty({size+lengthEpsilon, classNum}, options_long[x]));
+		h_values.push_back(torch::empty({size+lengthEpsilon}, options_long[x]));
+		
+	}
+	
 }
 
 template <class state, class action>
@@ -73,7 +90,9 @@ LargeBatch<state,action>::~LargeBatch()
 }
 
 template <class state, class action>
-void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren)
+bool LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, 
+									BatchworkUnit<action>* work, int& numChildren,int& batch,
+									int& sNum, int& wNum)
 {
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait(l, [this](){return (receives[0] || receives[1]) ;});
@@ -82,6 +101,8 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		whichBatch=0;
 	else
 		whichBatch=1;
+
+	assert(!(receives[0] && receives[1]));
 	
 	int unitsIndex=whichBatch*(maxbatchsize+lengthEpsilon);
 	int worksIndex=whichBatch*worksNum;
@@ -94,182 +115,80 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 	}
 	worksInProcess[worksIndex+workMark]=work;
 	
+	
+	if(mark==0)
+	{
+		work->checked=1;
+		work->b=whichBatch;
+	}	
+
 	mark=mark+numChildren;
 	workMark++;
 	work->processing=true;
 
     if(mark>=maxbatchsize)
     {	
+		batch=whichBatch;
+		sNum=mark;
+		wNum=workMark;
+		
 		receives[whichBatch]=false;
-		Full.notify_all();
+		dones[whichBatch]=false;
+		mark=0;
+		workMark=0;
 	}
 
+	return receives[whichBatch];
+
 }
 
 template <class state, class action>
-bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& uLength)
+void LargeBatch<state,action>::Switch(int& batch)
 {
 	std::unique_lock<std::mutex> l(lock);
-	Full.wait_for(l, std::chrono::microseconds(timeout), [this](){return (mark>=maxbatchsize);});
 	
-	if(mark>0)
+	if((!receives[(batch+1)%2]) && dones[(batch+1)%2])
 	{
-		receives[whichBatch]=false;
-
-		wStart=whichBatch*worksNum;
-		uStart=whichBatch*(maxbatchsize+lengthEpsilon);
-		wLength=workMark;
-		uLength=mark;	
-		return true;
+		receives[(batch+1)%2]=true;
+		Full.notify_all();
 	}	
+	
+}
+
+template <class state, class action>
+bool LargeBatch<state,action>::GetStuck(int& batch,int& sNum, int& wNum)
+{
+	std::unique_lock<std::mutex> l(lock);
+	
+	if(dones[batch])
+	{
+		sNum=mark;
+		wNum=workMark;
+	
+		receives[batch]=false;
+		dones[batch]=false;
+		mark=0;
+		workMark=0;
+
+		return true;
+	}
 	else
 		return false;
+	
 }
 
 template <class state, class action>
-void LargeBatch<state,action>::Empty()
+void LargeBatch<state,action>::Terminate(int& batch)
 {
-	lock.lock();
-	mark=0;
-	workMark=0;
-	whichBatch=(whichBatch+1)%2;
-	receives[whichBatch]=true;
-	lock.unlock();
-	Full.notify_all();
+	std::unique_lock<std::mutex> l(lock);
+	
+	dones[batch]=true;
+	if(!receives[(batch+1)%2])
+	{
+		receives[batch]=true;
+		Full.notify_all();	
+	}
 }
 
-template <class state, class action>
-void LargeBatch<state,action>::GetNNInput(state s,torch::Tensor& input)
-{
-	input = torch::zeros({36,3,3});
-
-	// // color center and edge cubies
-	// for(int i = 0; i < 6; i++)
-	// {
-	// 	input[7*i][1][1]=1;
-    //   	input[7*i][0][1]=input[7*i][1][0]=input[7*i][1][2]=input[7*i][2][1]=1;
-	// }
-
-	// // color corner cubies
-	// for(int i = 0; i < 8; i++)
-	// {
-	// 	if(i==0)
-	// 	{
-	// 		input[GetFaceColor(0,s)][2][0]=1;
-    //     	input[12+GetFaceColor(2,s)][0][0]=1;
-    //     	input[24+GetFaceColor(1,s)][0][2]=1;
-	// 	}
-	// 	else if(i==1)
-	// 	{
-	// 		input[GetFaceColor(3,s)][2][2]=1;
-    //     	input[12+GetFaceColor(4,s)][0][2]=1;
-    //     	input[30+GetFaceColor(5,s)][0][0]=1;
-	// 	}
-	// 	else if(i==2)
-	// 	{
-	// 		input[GetFaceColor(6,s)][0][2]=1;
-    //     	input[30+GetFaceColor(7,s)][0][2]=1;
-    //     	input[18+GetFaceColor(8,s)][0][0]=1;
-
-	// 	}
-	// 	else if(i==3)
-	// 	{
-	// 		input[GetFaceColor(9,s)][0][0]=1;
-    //     	input[24+GetFaceColor(11,s)][0][0]=1;
-    //     	input[18+GetFaceColor(10,s)][0][2]=1;
-			
-	// 	}
-	// 	else if(i==4)
-	// 	{
-	// 		input[6+GetFaceColor(12,s)][0][0]=1;
-    //     	input[12+GetFaceColor(13,s)][2][0]=1;
-    //     	input[24+GetFaceColor(14,s)][2][2]=1;
-			
-	// 	}
-	// 	else if(i==5)
-	// 	{
-	// 		input[6+GetFaceColor(15,s)][0][2]=1;
-    //     	input[12+GetFaceColor(17,s)][2][2]=1;
-    //     	input[30+GetFaceColor(16,s)][2][0]=1;
-			
-	// 	}
-	// 	else if(i==6)
-	// 	{
-	// 		input[6+GetFaceColor(18,s)][2][2]=1;
-    //     	input[30+GetFaceColor(20,s)][2][2]=1;
-    //     	input[18+GetFaceColor(19,s)][2][0]=1;
-			
-	// 	}
-	// 	else
-	// 	{
-	// 		input[6+GetFaceColor(21,s)][2][0]=1;
-    //     	input[24+GetFaceColor(22,s)][2][0]=1;
-    //     	input[18+GetFaceColor(23,s)][2][2]=1;			
-	// 	}
-	// }
-
-}
-
-template <class state, class action>
-int LargeBatch<state,action>::GetFaceColor(int face,state s)
-{
-	uint8_t cube = s.corner.state[face/3]; 
-    uint8_t rot =  s.corner.state[8+cube]; 
-    uint8_t result= cube*3+(3+(face%3)-rot)%3;
-
-	int thecolor=-1;
-    if (result==0)
-      thecolor=0;
-    else if (result==1)
-      thecolor=4;
-    else if (result==2)
-      thecolor=2;
-    else if (result==3)
-      thecolor=0;
-    else if (result==4)
-      thecolor=2;
-    else if (result==5)
-      thecolor=5;
-    else if (result==6)
-      thecolor=0;
-    else if (result==7)
-      thecolor=5;
-    else if (result==8)
-      thecolor=3;
-    else if (result==9)
-      thecolor=0;
-    else if (result==10)
-      thecolor=3;
-    else if (result==11)
-      thecolor=4;
-    else if (result==12)
-      thecolor=1;
-    else if (result==13)
-      thecolor=2;
-    else if (result==14)
-      thecolor=4;
-    else if (result==15)
-      thecolor=1;
-    else if (result==16)
-      thecolor=5;
-    else if (result==17)
-      thecolor=2;
-    else if (result==18)
-      thecolor=1;
-    else if (result==19)
-      thecolor=3;
-    else if (result==20)
-      thecolor=5;
-    else if (result==21)
-      thecolor=1;
-    else if (result==22)
-      thecolor=4;
-    else if (result==23)
-      thecolor=3;
-    else
-		throw logic_error("we cannot assign the color.");
-          
-    return thecolor;
-}
 
 #endif

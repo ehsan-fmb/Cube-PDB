@@ -338,7 +338,7 @@ template <class environment, class state, class action>
 torch::Tensor SingleIDAStar<environment, state, action>::GetNNOutput(torch::Tensor samples)
 {
 	std::lock_guard<std::mutex> l(modelLock);
-	samples=samples.to(device);
+	samples=samples.to(devices[0]);
 	inputs.push_back(samples);
 	torch::Tensor outputs= model->forward(inputs).toTensor();
 	torch::Tensor probs=torch::softmax(outputs,1);

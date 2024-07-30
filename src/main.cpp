@@ -39,7 +39,7 @@ void GetRubikStep14Instance(RubiksState &start, int which)
 	// cout<<"*********************************"<<endl;
 }
 
-torch::jit::script::Module load_model()
+torch::jit::script::Module load_model(int gpu_core)
 {	
 	
 	//load the model
@@ -55,7 +55,7 @@ torch::jit::script::Module load_model()
 	// Check if CUDA is available
     if (torch::cuda::is_available()) {
         std::cout << "CUDA is available! Moving model to GPU." << std::endl;
-        module.to(device);
+        module.to(devices[gpu_core]);
     } else {
         std::cout << "CUDA is not available. Using CPU." << std::endl;
     }
@@ -73,14 +73,14 @@ void Test(string method)
 	Timer timer;
 	cube.SetPruneSuccessors(true);
 	
-	// load NN heuristic
-	torch::jit::script::Module module=load_model();
-	module.eval();
-
-	// for test
-	torch::jit::script::Module module_test=load_model();
-	module_test.eval();
-
+	// load NN heuristics
+	vector<torch::jit::script::Module> modules;
+	torch::jit::script::Module module_0=load_model(0);
+	torch::jit::script::Module module_1=load_model(1);
+	module_0.eval();
+	module_1.eval();
+	modules.push_back(module_0);
+	modules.push_back(module_1);
 
 	// load 8-corners pdb heuristic
 	vector<int> blank;
@@ -95,7 +95,7 @@ void Test(string method)
 	h.heuristics.push_back(&pdb);
 
 
-	const auto numThreads = thread::hardware_concurrency()-1;
+	const auto numThreads = thread::hardware_concurrency();
 
 	for (int x = 1; x < 2; x++)
 	{
@@ -105,8 +105,7 @@ void Test(string method)
 		{
 			printf("-=-=-BPIDA*-=-=-\n");
 			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
-			bida.SetNNHeuristic(module);
-			bida.SetNNHeuristicTest(module_test);	
+			bida.SetNNHeuristics(modules);	
 			bida.SetHeuristic(&h);
 			bida.InitializeList();	
 			timer.StartTimer();
@@ -144,7 +143,6 @@ void Test(string method)
 	}
 	
 }
-
 
 int main(int argc, char *argv[])
 {
