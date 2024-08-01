@@ -7,17 +7,18 @@
 #include <condition_variable>
 #include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
+#include <cuda_runtime.h>
+#include <c10/cuda/CUDAStream.h>
+#include <torch/cuda.h>
 
 using namespace std;
-const int lengthEpsilon=100;
+constexpr int lengthEpsilon=96;
+torch::Device device(torch::kCUDA,1);
+
 const int channels=7;
 const int width=4;
 const int height=4;
 const int classNum=8;
-
-
-// gpu cores
-std::vector<torch::Device> devices = {torch::Device(torch::kCUDA, 0), torch::Device(torch::kCUDA, 1)};
 
 template <class action>
 struct BatchworkUnit {
@@ -31,57 +32,46 @@ struct BatchworkUnit {
 	int nodeCount;
 	bool processing;
 	int ID;
-	int checked;
-	int b;
 };
 
 template <class state,class action>
 class LargeBatch {
 public:
-	LargeBatch(int size,int numworks);
+	LargeBatch(int size,int t,int numworks);
 	~LargeBatch();
-	bool Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren,int& batch,
-																int& sNum, int& wNum);
-	bool GetStuck(int& batch,int& sNum, int& wNum);
-	void Terminate(int& batch);
-	void Switch(int& batch);
-	vector<torch::TensorOptions> options;
-	vector<torch::TensorOptions> options_long;
-	vector<torch::Tensor> gpu_inputs,h_values,samples,outputs;
+	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren);
+	void UpdateTimer(int t);
+	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
+	torch::Tensor samples,h_values,gpu_input;
+	torch::TensorOptions options;
+	torch::TensorOptions options_long;
+	c10::cuda::CUDAStream stream1;
+    c10::cuda::CUDAStream stream2;
 	vector<int*> units;
 	vector<BatchworkUnit<action>*> worksInProcess;
 	int mark,workMark;
 
 private:
-	int maxbatchsize,worksNum,whichBatch;
-	vector<bool> receives,dones;
+	int maxbatchsize,whichBatch,worksNum,timeout;;
+	vector<bool> receives;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
+	torch::TensorAccessor<float, 4> samplesAccessor;
 };
 
 template <class state, class action>
-LargeBatch<state,action>::LargeBatch(int size,int nw)
-:maxbatchsize(size),mark(0),workMark(0),worksNum(nw),receives{true,false},dones{false,true}
+LargeBatch<state,action>::LargeBatch(int size,int t,int nw)
+:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, channels, width, height})),samplesAccessor(samples.accessor<float,4>()),mark(0),workMark(0),
+			worksNum(nw),receives{true,false},stream1(c10::cuda::getStreamFromPool()),stream2(c10::cuda::getStreamFromPool())
 {	
 	units.resize((size+lengthEpsilon)*2);
 	worksInProcess.resize(nw*2);
 
-	for(unsigned int x = 0; x < devices.size(); x++)
-	{
-		options.push_back(torch::TensorOptions().device(devices[x]).dtype(torch::kFloat32));
-		options_long.push_back(torch::TensorOptions().device(devices[x]).dtype(torch::kInt64));
-	}
+	options = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kFloat32);
+    options_long = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kInt64);
 	
-	for(unsigned int x = 0; x < devices.size(); x++)
-	{
-		samples.push_back(torch::zeros({size+lengthEpsilon, channels, width, height}));
-
-		gpu_inputs.push_back(torch::empty({size+lengthEpsilon, channels,width,height}, options[x]));
-		outputs.push_back(torch::empty({size+lengthEpsilon, classNum}, options_long[x]));
-		h_values.push_back(torch::empty({size+lengthEpsilon}, options_long[x]));
-		
-	}
-	
+	gpu_input = torch::empty({size+lengthEpsilon, channels,width,height}, options);
+	h_values = torch::empty({size+lengthEpsilon, 1}, options_long);
 }
 
 template <class state, class action>
@@ -90,9 +80,7 @@ LargeBatch<state,action>::~LargeBatch()
 }
 
 template <class state, class action>
-bool LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, 
-									BatchworkUnit<action>* work, int& numChildren,int& batch,
-									int& sNum, int& wNum)
+void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren)
 {
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait(l, [this](){return (receives[0] || receives[1]) ;});
@@ -101,8 +89,6 @@ bool LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		whichBatch=0;
 	else
 		whichBatch=1;
-
-	assert(!(receives[0] && receives[1]));
 	
 	int unitsIndex=whichBatch*(maxbatchsize+lengthEpsilon);
 	int worksIndex=whichBatch*worksNum;
@@ -112,83 +98,48 @@ bool LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		units[unitsIndex+mark+i]=indexes[i];
 
 		// edit samples with new states
+
 	}
 	worksInProcess[worksIndex+workMark]=work;
 	
-	
-	if(mark==0)
-	{
-		work->checked=1;
-		work->b=whichBatch;
-	}	
-
 	mark=mark+numChildren;
 	workMark++;
 	work->processing=true;
 
     if(mark>=maxbatchsize)
     {	
-		batch=whichBatch;
-		sNum=mark;
-		wNum=workMark;
-		
 		receives[whichBatch]=false;
-		dones[whichBatch]=false;
-		mark=0;
-		workMark=0;
-	}
-
-	return receives[whichBatch];
-
-}
-
-template <class state, class action>
-void LargeBatch<state,action>::Switch(int& batch)
-{
-	std::unique_lock<std::mutex> l(lock);
-	
-	if((!receives[(batch+1)%2]) && dones[(batch+1)%2])
-	{
-		receives[(batch+1)%2]=true;
 		Full.notify_all();
-	}	
-	
+	}
+
 }
 
 template <class state, class action>
-bool LargeBatch<state,action>::GetStuck(int& batch,int& sNum, int& wNum)
+bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& uLength)
 {
 	std::unique_lock<std::mutex> l(lock);
+	Full.wait_for(l, std::chrono::microseconds(timeout), [this](){return (mark>=maxbatchsize);});
 	
-	if(dones[batch])
+	if(mark>0)
 	{
-		sNum=mark;
-		wNum=workMark;
-	
-		receives[batch]=false;
-		dones[batch]=false;
+		receives[whichBatch]=false;
+		timeout=5;
+
+		wStart=whichBatch*worksNum;
+		uStart=whichBatch*(maxbatchsize+lengthEpsilon);
+		wLength=workMark;
+		uLength=mark;
+
 		mark=0;
 		workMark=0;
+		whichBatch=(whichBatch+1)%2;
+		receives[whichBatch]=true;
 
+		Full.notify_all();
 		return true;
-	}
+	}	
 	else
 		return false;
-	
 }
-
-template <class state, class action>
-void LargeBatch<state,action>::Terminate(int& batch)
-{
-	std::unique_lock<std::mutex> l(lock);
-	
-	dones[batch]=true;
-	if(!receives[(batch+1)%2])
-	{
-		receives[batch]=true;
-		Full.notify_all();	
-	}
-}
-
 
 #endif
