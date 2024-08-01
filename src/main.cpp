@@ -4,9 +4,6 @@
 #include "batchIDAStar.h"
 #include "singleIDAStar.h"
 #include "RubiksCube.h"
-#include <torch/script.h> // One-stop header.
-#include <torch/torch.h>
-#include <memory>
 #include <stdexcept>
 
 
@@ -148,6 +145,10 @@ void Test(string method)
 
 int main(int argc, char *argv[])
 {
+	int runtime_version = 0;
+    cudaRuntimeGetVersion(&runtime_version);
+    std::cout << "CUDA Runtime Version: " << runtime_version << std::endl;
+	std::cout << "LibTorch version: " << TORCH_VERSION << std::endl;
 	string method=argv[1];
 	Test(method);
 	return 0;

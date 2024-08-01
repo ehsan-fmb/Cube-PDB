@@ -8,9 +8,17 @@
 #include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
 #include <cuda_runtime.h>
+#include <c10/cuda/CUDAStream.h>
+#include <torch/cuda.h>
 
 using namespace std;
-const int lengthEpsilon=100;
+constexpr int lengthEpsilon=96;
+torch::Device device(torch::kCUDA,1);
+
+const int channels=7;
+const int width=4;
+const int height=4;
+const int classNum=8;
 
 template <class action>
 struct BatchworkUnit {
@@ -34,14 +42,11 @@ public:
 	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren);
 	void UpdateTimer(int t);
 	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
-	void Empty();
-	int GetFaceColor(int face,state s);
-	void GetNNInput(state s,torch::Tensor& input);
-	torch::Tensor samples,h_values;
+	torch::Tensor samples,h_values,gpu_input;
 	torch::TensorOptions options;
 	torch::TensorOptions options_long;
-    torch::Tensor gpu_input;
-	cudaStream_t stream;
+	c10::cuda::CUDAStream stream1;
+    c10::cuda::CUDAStream stream2;
 	vector<int*> units;
 	vector<BatchworkUnit<action>*> worksInProcess;
 	int mark,workMark;
@@ -51,20 +56,22 @@ private:
 	vector<bool> receives;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
+	torch::TensorAccessor<float, 4> samplesAccessor;
 };
 
 template <class state, class action>
 LargeBatch<state,action>::LargeBatch(int size,int t,int nw)
-:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, 7, 4, 4})),mark(0),workMark(0),worksNum(nw),receives{true,false}
+:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, channels, width, height})),samplesAccessor(samples.accessor<float,4>()),mark(0),workMark(0),
+			worksNum(nw),receives{true,false},stream1(c10::cuda::getStreamFromPool()),stream2(c10::cuda::getStreamFromPool())
 {	
 	units.resize((size+lengthEpsilon)*2);
 	worksInProcess.resize(nw*2);
 
 	options = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kFloat32);
     options_long = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kInt64);
-	gpu_input = torch::empty({size+lengthEpsilon, 7,4,4}, options);
+	
+	gpu_input = torch::empty({size+lengthEpsilon, channels,width,height}, options);
 	h_values = torch::empty({size+lengthEpsilon, 1}, options_long);
-	cudaStreamCreate(&stream);
 }
 
 template <class state, class action>
@@ -91,6 +98,7 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		units[unitsIndex+mark+i]=indexes[i];
 
 		// edit samples with new states
+
 	}
 	worksInProcess[worksIndex+workMark]=work;
 	
@@ -115,161 +123,23 @@ bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& 
 	if(mark>0)
 	{
 		receives[whichBatch]=false;
+		timeout=5;
 
 		wStart=whichBatch*worksNum;
 		uStart=whichBatch*(maxbatchsize+lengthEpsilon);
 		wLength=workMark;
-		uLength=mark;	
+		uLength=mark;
+
+		mark=0;
+		workMark=0;
+		whichBatch=(whichBatch+1)%2;
+		receives[whichBatch]=true;
+
+		Full.notify_all();
 		return true;
 	}	
 	else
 		return false;
-}
-
-template <class state, class action>
-void LargeBatch<state,action>::Empty()
-{
-	lock.lock();
-	mark=0;
-	workMark=0;
-	whichBatch=(whichBatch+1)%2;
-	receives[whichBatch]=true;
-	lock.unlock();
-	Full.notify_all();
-}
-
-template <class state, class action>
-void LargeBatch<state,action>::GetNNInput(state s,torch::Tensor& input)
-{
-	input = torch::zeros({36,3,3});
-
-	// // color center and edge cubies
-	// for(int i = 0; i < 6; i++)
-	// {
-	// 	input[7*i][1][1]=1;
-    //   	input[7*i][0][1]=input[7*i][1][0]=input[7*i][1][2]=input[7*i][2][1]=1;
-	// }
-
-	// // color corner cubies
-	// for(int i = 0; i < 8; i++)
-	// {
-	// 	if(i==0)
-	// 	{
-	// 		input[GetFaceColor(0,s)][2][0]=1;
-    //     	input[12+GetFaceColor(2,s)][0][0]=1;
-    //     	input[24+GetFaceColor(1,s)][0][2]=1;
-	// 	}
-	// 	else if(i==1)
-	// 	{
-	// 		input[GetFaceColor(3,s)][2][2]=1;
-    //     	input[12+GetFaceColor(4,s)][0][2]=1;
-    //     	input[30+GetFaceColor(5,s)][0][0]=1;
-	// 	}
-	// 	else if(i==2)
-	// 	{
-	// 		input[GetFaceColor(6,s)][0][2]=1;
-    //     	input[30+GetFaceColor(7,s)][0][2]=1;
-    //     	input[18+GetFaceColor(8,s)][0][0]=1;
-
-	// 	}
-	// 	else if(i==3)
-	// 	{
-	// 		input[GetFaceColor(9,s)][0][0]=1;
-    //     	input[24+GetFaceColor(11,s)][0][0]=1;
-    //     	input[18+GetFaceColor(10,s)][0][2]=1;
-			
-	// 	}
-	// 	else if(i==4)
-	// 	{
-	// 		input[6+GetFaceColor(12,s)][0][0]=1;
-    //     	input[12+GetFaceColor(13,s)][2][0]=1;
-    //     	input[24+GetFaceColor(14,s)][2][2]=1;
-			
-	// 	}
-	// 	else if(i==5)
-	// 	{
-	// 		input[6+GetFaceColor(15,s)][0][2]=1;
-    //     	input[12+GetFaceColor(17,s)][2][2]=1;
-    //     	input[30+GetFaceColor(16,s)][2][0]=1;
-			
-	// 	}
-	// 	else if(i==6)
-	// 	{
-	// 		input[6+GetFaceColor(18,s)][2][2]=1;
-    //     	input[30+GetFaceColor(20,s)][2][2]=1;
-    //     	input[18+GetFaceColor(19,s)][2][0]=1;
-			
-	// 	}
-	// 	else
-	// 	{
-	// 		input[6+GetFaceColor(21,s)][2][0]=1;
-    //     	input[24+GetFaceColor(22,s)][2][0]=1;
-    //     	input[18+GetFaceColor(23,s)][2][2]=1;			
-	// 	}
-	// }
-
-}
-
-template <class state, class action>
-int LargeBatch<state,action>::GetFaceColor(int face,state s)
-{
-	uint8_t cube = s.corner.state[face/3]; 
-    uint8_t rot =  s.corner.state[8+cube]; 
-    uint8_t result= cube*3+(3+(face%3)-rot)%3;
-
-	int thecolor=-1;
-    if (result==0)
-      thecolor=0;
-    else if (result==1)
-      thecolor=4;
-    else if (result==2)
-      thecolor=2;
-    else if (result==3)
-      thecolor=0;
-    else if (result==4)
-      thecolor=2;
-    else if (result==5)
-      thecolor=5;
-    else if (result==6)
-      thecolor=0;
-    else if (result==7)
-      thecolor=5;
-    else if (result==8)
-      thecolor=3;
-    else if (result==9)
-      thecolor=0;
-    else if (result==10)
-      thecolor=3;
-    else if (result==11)
-      thecolor=4;
-    else if (result==12)
-      thecolor=1;
-    else if (result==13)
-      thecolor=2;
-    else if (result==14)
-      thecolor=4;
-    else if (result==15)
-      thecolor=1;
-    else if (result==16)
-      thecolor=5;
-    else if (result==17)
-      thecolor=2;
-    else if (result==18)
-      thecolor=1;
-    else if (result==19)
-      thecolor=3;
-    else if (result==20)
-      thecolor=5;
-    else if (result==21)
-      thecolor=1;
-    else if (result==22)
-      thecolor=4;
-    else if (result==23)
-      thecolor=3;
-    else
-		throw logic_error("we cannot assign the color.");
-          
-    return thecolor;
 }
 
 #endif

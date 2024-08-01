@@ -14,13 +14,11 @@
 #include <cassert>
 
 
-const int largebatchsize=5000;
-const int largetimeout=2;
-const int numNodesWork=50000;
-const int stackNum=30;
-const int maxChildrenNum=20;
-torch::Device device(torch::kCUDA,1);
-using namespace std;
+constexpr int largebatchsize=8000;
+constexpr int largetimeout=12000;
+constexpr int numNodesWork=50000;
+constexpr int stackNum=60;
+constexpr int maxChildrenNum=20;
 
 template <class state>
 struct StackUnit {
@@ -59,7 +57,7 @@ private:
 					  action forbiddenAction, state &currState,
 					  vector<action> &thePath);
 	void UpdateNextBound(double currBound, double fCost);
-	void GetNNOutput(torch::Tensor& samples,torch::Tensor& h_values);
+	void GetNNOutput(int n);
 	double GetSavedHCost(int& ID,int& index);
 	void FeedLargeBatch();
 	state goal;
@@ -75,8 +73,6 @@ private:
 	mutable std::condition_variable workReady;
 	vector<thread*> threads;
 	vector<int>SavedHCosts;
-	torch::Tensor outputs,tmp_hcosts;
-	vector<torch::jit::IValue> inputs;
 	SharedQueue<int> q;
 	LargeBatch<state,action> largeBatch;
 	int foundSolution;
@@ -84,6 +80,7 @@ private:
 	bool stopfeeder;
 	Timer timer;
 	int feedcounter,totalsize,numThreads;
+	torch::Tensor outputs,tmp_hcosts,narrow_cpu_tensor,gpu_slice;
 };
 
 
@@ -91,7 +88,8 @@ template <class environment, class state, class action>
 BatchIDAStar<environment, state, action>::BatchIDAStar(int nT):
 finishAfterSolution(false),largeBatch(largebatchsize,largetimeout,nT*stackNum),isRoot(true),workLocks(nT*stackNum),numThreads(nT)
 { 	
-	inputs.push_back(torch::jit::IValue());
+	outputs= torch::empty({largebatchsize+lengthEpsilon,classNum}).to(device);
+	tmp_hcosts=torch::empty({largebatchsize+lengthEpsilon},torch::dtype(torch::kInt64));
 }
 
 template <class environment, class state, class action>
@@ -315,7 +313,7 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 		unit.node=startState;
 		
 		AddWorkUnit(env,unit,threadworks[i],bound,nextvalues[i],nodeLeft,IDS[i]);
-		stacks[i].push(move(unit));
+		stacks[i].push(unit);
     }
 
 	while (miss<stackNum)
@@ -349,7 +347,7 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 				AddWorkUnit(env,unit,threadworks[counter],bound,nextvalues[counter],nodeLeft,IDS[counter]);
 
 				// set hcost of zero for root and push it to the stack
-				stacks[counter].push(move(unit));	
+				stacks[counter].push(unit);	
 			}
 
 			costready=DoIteration(&env, stacks[counter], bound, threadworks[counter], actCache,stateCache,indexCache);
@@ -437,7 +435,7 @@ bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, sta
 		
 		indexes[j]=&SavedHCosts[w.ID*numNodesWork+w.nodeCount];
 		children[j]=currState;
-		nodes.push(move(unit));
+		nodes.push(unit);
 		
 		env->UndoAction(currState, actions[x]);
 
@@ -462,11 +460,18 @@ double BatchIDAStar<environment, state, action>::GetSavedHCost(int& ID,int& inde
 }
 
 template <class environment, class state, class action>
-void BatchIDAStar<environment, state, action>::GetNNOutput(torch::Tensor& samples, torch::Tensor& h_values)
+void BatchIDAStar<environment, state, action>::GetNNOutput(int n)
 {
-	inputs[0]= torch::jit::IValue(std::ref(samples));
-	outputs= model.forward(inputs).toTensor();
-	h_values= torch::argmax(outputs,1);
+	torch::InferenceMode inference_mode;
+
+	narrow_cpu_tensor = largeBatch.samples.narrow(0, 0, n);
+	gpu_slice = largeBatch.gpu_input.slice(0, 0, n);
+	gpu_slice.copy_(narrow_cpu_tensor, true);
+    
+	c10::cuda::setCurrentCUDAStream(largeBatch.stream2);
+	outputs=model.forward({largeBatch.gpu_input}).toTensor();
+	largeBatch.h_values= torch::argmax(outputs,1);
+	largeBatch.stream2.synchronize();
 }
 
 template <class environment, class state, class action>
@@ -477,17 +482,16 @@ void BatchIDAStar<environment, state, action>::FeedLargeBatch()
 		int wStart,uStart,wLength,uLength;
 		bool full=largeBatch.IsFull(wStart,uStart,wLength,uLength);
 		
-		if(!full)
-			continue;
-
-		largeBatch.Empty();
+		// cout<<"size of the batch: "<<uLength<<'\n';
 		
-		// get hcosts from nn 
-		largeBatch.gpu_input.copy_(largeBatch.samples, true);
-		GetNNOutput(largeBatch.gpu_input,largeBatch.h_values);
-		tmp_hcosts=largeBatch.h_values.to(torch::kCPU,largeBatch.stream);
-		cudaStreamSynchronize(largeBatch.stream);
-		auto accessor=tmp_hcosts.accessor<long,1>();
+		if(!full)
+			continue; 
+		
+		// get hcosts from nn
+		GetNNOutput(uLength);
+		tmp_hcosts=largeBatch.h_values.to(torch::kCPU,true,largeBatch.stream1);
+		largeBatch.stream1.synchronize();
+		auto accessor= tmp_hcosts.accessor<long,1>();
 
 		feedcounter++;
 		totalsize=totalsize+largeBatch.mark;
