@@ -10,11 +10,15 @@
 #include <cuda_runtime.h>
 #include <c10/cuda/CUDAStream.h>
 #include <torch/cuda.h>
+#include <c10/cuda/CUDAGuard.h>
+#include "MicroTimer.h"
 
 using namespace std;
-constexpr int lengthEpsilon=96;
-torch::Device device(torch::kCUDA,1);
 
+// gpu cores
+std::vector<torch::Device> devices = {torch::Device(torch::kCUDA, 0), torch::Device(torch::kCUDA, 1)};
+
+constexpr int lengthEpsilon=2000;
 const int channels=7;
 const int width=4;
 const int height=4;
@@ -39,39 +43,40 @@ class LargeBatch {
 public:
 	LargeBatch(int size,int t,int numworks);
 	~LargeBatch();
-	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren);
-	void UpdateTimer(int t);
+	void Add(vector<state*>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works);
 	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
 	torch::Tensor samples,h_values,gpu_input;
-	torch::TensorOptions options;
-	torch::TensorOptions options_long;
-	c10::cuda::CUDAStream stream1;
-    c10::cuda::CUDAStream stream2;
+	torch::TensorOptions options,options_long;
+	at::cuda::CUDAStream stream1,stream2,stream3;
 	vector<int*> units;
 	vector<BatchworkUnit<action>*> worksInProcess;
 	int mark,workMark;
 
 private:
-	int maxbatchsize,whichBatch,worksNum,timeout;;
+	int maxbatchsize,whichBatch,worksNum,timeout;
 	vector<bool> receives;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
 	torch::TensorAccessor<float, 4> samplesAccessor;
+	MicroTimer timer;
 };
 
 template <class state, class action>
 LargeBatch<state,action>::LargeBatch(int size,int t,int nw)
-:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, channels, width, height})),samplesAccessor(samples.accessor<float,4>()),mark(0),workMark(0),
-			worksNum(nw),receives{true,false},stream1(c10::cuda::getStreamFromPool()),stream2(c10::cuda::getStreamFromPool())
+:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, channels, width, height})),
+	samplesAccessor(samples.accessor<float,4>()),mark(0),workMark(0),worksNum(nw),receives{true,false},stream1(at::cuda::getStreamFromPool(false,1)), 
+    stream2(at::cuda::getStreamFromPool(false,1)), stream3(at::cuda::getStreamFromPool(false,1)) 
 {	
 	units.resize((size+lengthEpsilon)*2);
 	worksInProcess.resize(nw*2);
 
-	options = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kFloat32);
-    options_long = torch::TensorOptions().device(torch::kCUDA, 1).dtype(torch::kInt64);
+	options = torch::TensorOptions().device(devices[1]).dtype(torch::kFloat32);
+    options_long = torch::TensorOptions().device(devices[1]).dtype(torch::kInt64);
 	
 	gpu_input = torch::empty({size+lengthEpsilon, channels,width,height}, options);
-	h_values = torch::empty({size+lengthEpsilon, 1}, options_long);
+	h_values = torch::empty({size+lengthEpsilon}, options_long);
+
+	at::cuda::CUDAGuard device_guard(1);
 }
 
 template <class state, class action>
@@ -80,7 +85,7 @@ LargeBatch<state,action>::~LargeBatch()
 }
 
 template <class state, class action>
-void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* work, int& numChildren)
+void LargeBatch<state,action>::Add(vector<state*>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works)
 {
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait(l, [this](){return (receives[0] || receives[1]) ;});
@@ -92,7 +97,7 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 	
 	int unitsIndex=whichBatch*(maxbatchsize+lengthEpsilon);
 	int worksIndex=whichBatch*worksNum;
-	for(unsigned int i = 0; i < numChildren; i++)
+	for(unsigned int i = 0; i < indexes.size(); i++)
 	{
 		// change batchunits in units
 		units[unitsIndex+mark+i]=indexes[i];
@@ -100,16 +105,24 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		// edit samples with new states
 
 	}
-	worksInProcess[worksIndex+workMark]=work;
+
+	for(unsigned int i = 0; i < works.size(); i++)
+	{
+		worksInProcess[worksIndex+workMark+i]=works[i];
+	}
 	
-	mark=mark+numChildren;
-	workMark++;
-	work->processing=true;
+	mark=mark+indexes.size();
+	workMark=workMark+works.size();
 
     if(mark>=maxbatchsize)
     {	
 		receives[whichBatch]=false;
 		Full.notify_all();
+
+		timer.stopTimer(); // Stop the timer
+		// cout<<"batch size: "<<mark<<'\n';
+    	// std::cout << "Time taken: " << timer.getDuration() << " microseconds" << std::endl;
+		// cout<<"*********************\n";
 	}
 
 }
@@ -134,6 +147,8 @@ bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& 
 		workMark=0;
 		whichBatch=(whichBatch+1)%2;
 		receives[whichBatch]=true;
+
+		timer.startTimer(); // Start the timer
 
 		Full.notify_all();
 		return true;

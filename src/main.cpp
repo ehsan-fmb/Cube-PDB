@@ -1,11 +1,10 @@
-#include <iostream>
 #include "IDAStar.h"
 #include "ParallelIDAStar.h"
 #include "batchIDAStar.h"
 #include "singleIDAStar.h"
 #include "RubiksCube.h"
 #include <stdexcept>
-
+#include "Timer.h"
 
 using namespace std;
 
@@ -24,16 +23,10 @@ void GetRubikStep14Instance(RubiksState &start, int which)
 	}
 
 	//print the state
-	// cout<<"*********************************"<<endl;
-	// cout << "corners: ";
-    // for (int i = 0; i < 16; i++)
-    //     cout << unsigned(start.corner.state[i]) << " ";
-    // cout << endl;
-	// cout << "edges: ";
-    // for (int i = 0; i < 24; i++)
-    //     cout << unsigned(start.edge.state[i]) << " ";
-    // cout << endl;
-	// cout<<"*********************************"<<endl;
+	cout<<"*********************************"<<endl;
+    printf("corners: %" PRIu64 "\n", start.corner.state);
+	printf("edges: %" PRIu64 "\n", start.edge.state);
+	cout<<"*********************************"<<endl;
 }
 
 torch::jit::script::Module load_model(int gpu_core)
@@ -71,13 +64,10 @@ void Test(string method)
 	cube.SetPruneSuccessors(true);
 	
 	// load NN heuristics
-	vector<torch::jit::script::Module> modules;
-	torch::jit::script::Module module_0=load_model(0);
-	torch::jit::script::Module module_1=load_model(1);
-	module_0.eval();
+	torch::jit::script::Module module_1=load_model(0);
+	torch::jit::script::Module module_2=load_model(1);
 	module_1.eval();
-	modules.push_back(module_0);
-	modules.push_back(module_1);
+	module_2.eval();
 
 	// load 8-corners pdb heuristic
 	vector<int> blank;
@@ -92,9 +82,9 @@ void Test(string method)
 	h.heuristics.push_back(&pdb);
 
 
-	const auto numThreads = thread::hardware_concurrency();
+	const auto numThreads = thread::hardware_concurrency()-1;
 
-	for (int x = 1; x < 2; x++)
+	for (int x = 0; x < 1; x++)
 	{
 		GetRubikStep14Instance(start, x);
 		
@@ -102,7 +92,7 @@ void Test(string method)
 		{
 			printf("-=-=-BPIDA*-=-=-\n");
 			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
-			bida.SetNNHeuristics(modules);	
+			bida.SetNNHeuristics(module_1,module_2);
 			bida.SetHeuristic(&h);
 			bida.InitializeList();	
 			timer.StartTimer();
@@ -135,7 +125,6 @@ void Test(string method)
 		}
 		else
 			throw invalid_argument( "method does not exist." );
-
 
 	}
 	
