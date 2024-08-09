@@ -63,11 +63,13 @@ void Test(string method)
 	Timer timer;
 	cube.SetPruneSuccessors(true);
 	
-	// load NN heuristics
+	// load NN heuristics and use fp16 precision
 	torch::jit::script::Module module_1=load_model(0);
 	torch::jit::script::Module module_2=load_model(1);
 	module_1.eval();
 	module_2.eval();
+	module_1.to(at::kHalf);
+	module_2.to(at::kHalf);
 
 	// load 8-corners pdb heuristic
 	vector<int> blank;
@@ -84,7 +86,7 @@ void Test(string method)
 
 	const auto numThreads = thread::hardware_concurrency()-1;
 
-	for (int x = 0; x < 1; x++)
+	for (int x = 1; x < 2; x++)
 	{
 		GetRubikStep14Instance(start, x);
 		
@@ -131,12 +133,13 @@ void Test(string method)
 }
 
 int main(int argc, char *argv[])
-{
+{	
 	int runtime_version = 0;
     cudaRuntimeGetVersion(&runtime_version);
     std::cout << "CUDA Runtime Version: " << runtime_version << std::endl;
 	std::cout << "LibTorch version: " << TORCH_VERSION << std::endl;
 	string method=argv[1];
 	Test(method);
+
 	return 0;
 }

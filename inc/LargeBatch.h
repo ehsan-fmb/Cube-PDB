@@ -18,7 +18,7 @@ using namespace std;
 // gpu cores
 std::vector<torch::Device> devices = {torch::Device(torch::kCUDA, 0), torch::Device(torch::kCUDA, 1)};
 
-constexpr int lengthEpsilon=2000;
+constexpr int lengthEpsilon=1000;
 const int channels=7;
 const int width=4;
 const int height=4;
@@ -43,7 +43,7 @@ class LargeBatch {
 public:
 	LargeBatch(int size,int t,int numworks);
 	~LargeBatch();
-	void Add(vector<state*>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works);
+	void Add(vector<state>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works);
 	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
 	torch::Tensor samples,h_values,gpu_input;
 	torch::TensorOptions options,options_long;
@@ -76,6 +76,9 @@ LargeBatch<state,action>::LargeBatch(int size,int t,int nw)
 	gpu_input = torch::empty({size+lengthEpsilon, channels,width,height}, options);
 	h_values = torch::empty({size+lengthEpsilon}, options_long);
 
+	samples=samples.to(at::kHalf);
+	gpu_input=gpu_input.to(at::kHalf);
+
 	at::cuda::CUDAGuard device_guard(1);
 }
 
@@ -85,30 +88,31 @@ LargeBatch<state,action>::~LargeBatch()
 }
 
 template <class state, class action>
-void LargeBatch<state,action>::Add(vector<state*>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works)
+void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works)
 {
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait(l, [this](){return (receives[0] || receives[1]) ;});
-	
+
 	if(receives[0])
 		whichBatch=0;
 	else
 		whichBatch=1;
-	
+
 	int unitsIndex=whichBatch*(maxbatchsize+lengthEpsilon);
 	int worksIndex=whichBatch*worksNum;
+
 	for(unsigned int i = 0; i < indexes.size(); i++)
 	{
 		// change batchunits in units
 		units[unitsIndex+mark+i]=indexes[i];
 
 		// edit samples with new states
-
 	}
 
 	for(unsigned int i = 0; i < works.size(); i++)
 	{
 		worksInProcess[worksIndex+workMark+i]=works[i];
+		works[i]->processing=true;
 	}
 	
 	mark=mark+indexes.size();
@@ -118,11 +122,6 @@ void LargeBatch<state,action>::Add(vector<state*>& cubestates, vector<int*>& ind
     {	
 		receives[whichBatch]=false;
 		Full.notify_all();
-
-		timer.stopTimer(); // Stop the timer
-		// cout<<"batch size: "<<mark<<'\n';
-    	// std::cout << "Time taken: " << timer.getDuration() << " microseconds" << std::endl;
-		// cout<<"*********************\n";
 	}
 
 }
@@ -142,13 +141,11 @@ bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& 
 		uStart=whichBatch*(maxbatchsize+lengthEpsilon);
 		wLength=workMark;
 		uLength=mark;
-
+		
 		mark=0;
 		workMark=0;
 		whichBatch=(whichBatch+1)%2;
 		receives[whichBatch]=true;
-
-		timer.startTimer(); // Start the timer
 
 		Full.notify_all();
 		return true;
