@@ -84,7 +84,7 @@ void Test(string method)
 	h.heuristics.push_back(&pdb);
 
 
-	const auto numThreads = thread::hardware_concurrency()-1;
+	const auto numThreads = thread::hardware_concurrency()-2;
 
 	for (int x = 1; x < 2; x++)
 	{

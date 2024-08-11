@@ -105,7 +105,3 @@ if __name__ == "__main__":
         evaluation(args.pdb_name)
     else:
         raise ValueError("task is not defined.")
-
-
-
-
