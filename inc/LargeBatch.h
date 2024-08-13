@@ -66,6 +66,7 @@ LargeBatch<state,action>::LargeBatch(int size,int t,int nw,int gpu_core)
 :maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, channels, width, height})),
 	samplesAccessor(samples.accessor<float,4>()),mark(0),workMark(0),worksNum(nw),receives{true,false},stream1(at::cuda::getStreamFromPool(false,gpu_core)), 
     stream2(at::cuda::getStreamFromPool(false,gpu_core)), stream3(at::cuda::getStreamFromPool(false,gpu_core)),num(gpu_core)
+
 {	
 	units.resize((size+lengthEpsilon)*2);
 	worksInProcess.resize(nw*2);
@@ -106,6 +107,7 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		units[unitsIndex+mark+i]=indexes[i];
 
 		// edit samples with new states
+
 	}
 
 	worksInProcess[worksIndex+workMark]=fw;

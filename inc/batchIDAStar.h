@@ -12,8 +12,7 @@
 #include <stdexcept>
 #include <cassert>
 
-
-constexpr int largebatchsize=11000;
+constexpr int largebatchsize=8000;
 constexpr int largetimeout=12000;
 constexpr int numNodesWork=50000;
 constexpr int stackNum=300;
@@ -518,7 +517,8 @@ void BatchIDAStar<environment, state, action>::GetNNOutput(torch::jit::script::M
 												torch::Tensor& outputs,torch::Tensor& tmp_hcosts)
 {
 	torch::InferenceMode inference_mode;
-
+	cudaSetDevice(Batch.num);
+	
 	Batch.narrow_cpu_tensor = Batch.samples.narrow(0, 0, n);
 	Batch.gpu_slice = Batch.gpu_input.slice(0, 0, n);
 	Batch.tmp_slice=tmp_hcosts.narrow(0,0,n);
@@ -560,15 +560,6 @@ void BatchIDAStar<environment, state, action>::FeedLargeBatch(LargeBatch<state,a
 		GetNNOutput(module,Batch,uLength,outputs,tmp_hcosts);
 		auto accessor= tmp_hcosts.accessor<long,1>();
 		
-		// if(Batch.num==0)
-		// {
-		// 	timer.stopTimer(); // Stop the timer
-		// 	cout<<"batch size: "<<uLength<<'\n';
-    	// 	std::cout << "Time taken for ML: " << timer.getDuration() << " microseconds" << std::endl;
-		// 	cout<<"*********************\n";
-		// }
-		
-		
 		feedcounter++;
 		totalsize=totalsize+Batch.mark;
 		for (size_t i = 0; i <uLength; i++)
@@ -582,6 +573,14 @@ void BatchIDAStar<environment, state, action>::FeedLargeBatch(LargeBatch<state,a
 			Batch.worksInProcess[wStart+i]->processing=false;
 			firstWorks[Batch.worksInProcess[wStart+i]->ID/stackNum].notify_one();	
 		}
+
+		// if(Batch.num==0)
+		// {
+		// 	timer.stopTimer(); // Stop the timer
+		// 	cout<<"batch size: "<<uLength<<'\n';
+    	// 	std::cout << "Time taken for ML: " << timer.getDuration() << " microseconds" << std::endl;
+		// 	cout<<"*********************\n";
+		// }
 	}
 	
 }

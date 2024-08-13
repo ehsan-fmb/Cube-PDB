@@ -5,6 +5,7 @@
 #include "RubiksCube.h"
 #include <stdexcept>
 #include "Timer.h"
+#include "torch_tensorrt/torch_tensorrt.h"
 
 using namespace std;
 
@@ -27,6 +28,20 @@ void GetRubikStep14Instance(RubiksState &start, int which)
     printf("corners: %" PRIu64 "\n", start.corner.state);
 	printf("edges: %" PRIu64 "\n", start.edge.state);
 	cout<<"*********************************"<<endl;
+}
+
+
+void warmup_model(torch::jit::script::Module& model, int gpu_core, int batch_size, int input_channels, int height, int width, int num_warmup_iterations) 
+{
+    // Create a dummy input tensor
+    auto dummy_input = torch::randn({batch_size, input_channels, height, width}).to(devices[gpu_core]);
+	dummy_input=dummy_input.to(at::kHalf);
+
+    torch::InferenceMode guard;
+	cudaSetDevice(gpu_core);
+    for (int i = 0; i < num_warmup_iterations; ++i) {
+        auto output = model.forward({dummy_input});
+    }
 }
 
 torch::jit::script::Module load_model(int gpu_core)
@@ -71,6 +86,25 @@ void Test(string method)
 	module_1.to(at::kHalf);
 	module_2.to(at::kHalf);
 
+	
+	// use TensorRT to improve the performance of the models
+	std::vector<int64_t> input_shape = {largebatchsize+lengthEpsilon, channels, height, width};
+	torch_tensorrt::Input input(input_shape);
+
+	torch_tensorrt::torchscript::CompileSpec compile_settings1({input});
+	torch_tensorrt::torchscript::CompileSpec compile_settings2({input});
+
+	compile_settings1.enabled_precisions = {torch::kHalf};
+	compile_settings2.enabled_precisions = {torch::kHalf};
+
+	cudaSetDevice(0);
+	auto trt_model_1 = torch_tensorrt::torchscript::compile(module_1, compile_settings1);
+	cudaSetDevice(1);
+	auto trt_model_2 = torch_tensorrt::torchscript::compile(module_2, compile_settings2);
+
+	warmup_model(trt_model_1,0,largebatchsize+lengthEpsilon,channels,height,width,10);
+	warmup_model(trt_model_2,1,largebatchsize+lengthEpsilon,channels,height,width,10);
+
 	// load 8-corners pdb heuristic
 	vector<int> blank;
 	vector<int> corners;
@@ -94,7 +128,7 @@ void Test(string method)
 		{
 			printf("-=-=-BPIDA*-=-=-\n");
 			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
-			bida.SetNNHeuristics(module_1,module_2);
+			bida.SetNNHeuristics(trt_model_1,trt_model_2);
 			bida.SetHeuristic(&h);
 			bida.InitializeList();	
 			timer.StartTimer();
