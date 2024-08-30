@@ -195,7 +195,7 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 	vector<action> act;
 	env->GetActions(from, act);
 	
-	double rootH = 11;
+	double rootH =heuristic->HCost(from, to);
 	UpdateNextBound(0, rootH);
 	
 	// builds a list of all states at a fixed depth
@@ -224,8 +224,8 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 		fCostHistogram.resize(nextBound+1);
 		threads.resize(0);
 		
-		cout<<"counter for feeder: "<<feedcounter<<endl;
-		cout<<"totalsize of list: "<<totalsize<<endl;
+		// cout<<"counter for feeder: "<<feedcounter<<endl;
+		// cout<<"totalsize of list: "<<totalsize<<endl;
 		printf("Starting iteration with bound %f; %" PRId64 " expanded, %" PRId64 " generated\n", nextBound, nodesExpanded, nodesTouched);
 		fflush(stdout); 
 		
@@ -434,11 +434,11 @@ bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, vec
 	double& g=stackunit.gcost;
 	action& forbiddenAction=stackunit.last;
 
-	double h=double(GetSavedHCost(w.ID,node_index));
+	// double h=double(GetSavedHCost(w.ID,node_index));
 	nodes.pop_back();
 
 	// To get pdb results
-	h=heuristic->HCost(currState, goal);
+	double h=heuristic->HCost(currState, goal);
 
 	if (fgreater(g+h, bound))
 	{
@@ -531,12 +531,12 @@ void BatchIDAStar<environment, state, action>::GetNNOutput(torch::jit::script::M
 	outputs=module.forward({Batch.gpu_input}).toTensor();
 	Batch.h_values= torch::argmax(outputs,1);
 
-	at::cuda::CUDAStreamGuard guard3(Batch.stream3);
-	Batch.tmp_slice.copy_(Batch.hcost_slice,true);
+	// at::cuda::CUDAStreamGuard guard3(Batch.stream3);
+	// Batch.tmp_slice.copy_(Batch.hcost_slice,true);
 
 	Batch.stream1.synchronize();
 	Batch.stream2.synchronize();
-	Batch.stream3.synchronize();
+	// Batch.stream3.synchronize();
 }
 
 template <class environment, class state, class action>
@@ -547,26 +547,19 @@ void BatchIDAStar<environment, state, action>::FeedLargeBatch(LargeBatch<state,a
 	{
 		int wStart,uStart,wLength,uLength;
 		bool full=Batch.IsFull(wStart,uStart,wLength,uLength);
-		
-		// cout<<"size of the batch: "<<uLength<<'\n';
 
 		if(!full)
 			continue; 
 
-		// if(Batch.num==0)
-		// 	timer.startTimer();
-
 		// get hcosts from nn
 		GetNNOutput(module,Batch,uLength,outputs,tmp_hcosts);
-		auto accessor= tmp_hcosts.accessor<long,1>();
 		
-		feedcounter++;
-		totalsize=totalsize+Batch.mark;
-		for (size_t i = 0; i <uLength; i++)
-		{
-			//units
-			*Batch.units[uStart+i]=accessor[i];
-		}
+		// auto accessor= tmp_hcosts.accessor<long,1>();
+		// for (size_t i = 0; i <uLength; i++)
+		// {
+		// 	//units
+		// 	*Batch.units[uStart+i]=accessor[i];
+		// }
 		for (size_t i = 0; i <wLength; i++)
 		{
 			std::unique_lock<std::mutex> lock(workLocks[Batch.worksInProcess[wStart+i]->ID]);
@@ -574,13 +567,6 @@ void BatchIDAStar<environment, state, action>::FeedLargeBatch(LargeBatch<state,a
 			firstWorks[Batch.worksInProcess[wStart+i]->ID/stackNum].notify_one();	
 		}
 
-		// if(Batch.num==0)
-		// {
-		// 	timer.stopTimer(); // Stop the timer
-		// 	cout<<"batch size: "<<uLength<<'\n';
-    	// 	std::cout << "Time taken for ML: " << timer.getDuration() << " microseconds" << std::endl;
-		// 	cout<<"*********************\n";
-		// }
 	}
 	
 }

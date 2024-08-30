@@ -45,7 +45,7 @@ public:
 	~LargeBatch();
 	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* fw);
 	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
-	torch::Tensor samples,h_values,gpu_input,narrow_cpu_tensor,gpu_slice,hcost_slice,tmp_slice;
+	torch::Tensor samples,h_values,gpu_input,narrow_cpu_tensor,gpu_slice,hcost_slice,tmp_slice,samples_test;
 	torch::TensorOptions options,options_long;
 	at::cuda::CUDAStream stream1,stream2,stream3;
 	vector<int*> units;
@@ -57,15 +57,17 @@ private:
 	vector<bool> receives;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
-	torch::TensorAccessor<float, 4> samplesAccessor;
+	torch::TensorAccessor<float, 4> samplesAccessor,samplesTestAccessor;
 	MicroTimer timer;
+	int state_new[16]={0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
 };
 
 template <class state, class action>
 LargeBatch<state,action>::LargeBatch(int size,int t,int nw,int gpu_core)
 :maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, channels, width, height})),
 	samplesAccessor(samples.accessor<float,4>()),mark(0),workMark(0),worksNum(nw),receives{true,false},stream1(at::cuda::getStreamFromPool(false,gpu_core)), 
-    stream2(at::cuda::getStreamFromPool(false,gpu_core)), stream3(at::cuda::getStreamFromPool(false,gpu_core)),num(gpu_core)
+    stream2(at::cuda::getStreamFromPool(false,gpu_core)), stream3(at::cuda::getStreamFromPool(false,gpu_core)),num(gpu_core),
+	samples_test(torch::zeros({size+lengthEpsilon, channels, width, height})),samplesTestAccessor(samples_test.accessor<float,4>())
 
 {	
 	units.resize((size+lengthEpsilon)*2);
@@ -108,6 +110,16 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 
 		// edit samples with new states
 
+		for(int val=1; val<=7; val++) {
+		int idx = state_new[val];
+		samplesTestAccessor[mark+i][val-1][idx/4][idx%4] = 1;
+		}
+
+		for(int val=8; val<=15; val++) {
+		int idx = state_new[val];
+		samplesTestAccessor[mark+i][val-8][idx/4][idx%4] = 1;
+		}
+
 	}
 
 	worksInProcess[worksIndex+workMark]=fw;
@@ -118,11 +130,6 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 
     if(mark>=maxbatchsize)
     {	
-		// timer.stopTimer(); // Stop the timer
-		// cout<<"batch size: "<<mark<<'\n';
-    	// std::cout << "Time taken for search: " << timer.getDuration() << " microseconds" << std::endl;
-		// cout<<"*********************\n";
-
 		receives[whichBatch]=false;
 		Full.notify_all();
 	}
@@ -144,8 +151,6 @@ bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& 
 		uStart=whichBatch*(maxbatchsize+lengthEpsilon);
 		wLength=workMark;
 		uLength=mark;
-		
-		// timer.startTimer();
 
 		mark=0;
 		workMark=0;

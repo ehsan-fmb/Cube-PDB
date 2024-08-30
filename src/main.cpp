@@ -1,35 +1,14 @@
 #include "IDAStar.h"
 #include "ParallelIDAStar.h"
 #include "batchIDAStar.h"
-#include "singleIDAStar.h"
-#include "RubiksCube.h"
+#include "Instances.h"
 #include <stdexcept>
+#include "DelayedHeuristicAStar.h"
+#include "BatchABuffer.h"
 #include "Timer.h"
 #include "torch_tensorrt/torch_tensorrt.h"
 
 using namespace std;
-
-void GetRubikStep14Instance(RubiksState &start, int which)
-{
-	RubiksCube c;
-	int table[] = {52058078,116173544,208694125,131936966,141559500,133800745,194246206,50028346,167007978,207116816,163867037,119897198,201847476,210859515,117688410,121633885};
-	int table2[] = {145008714,165971878,154717942,218927374,182772845,5808407,19155194,137438954,13143598,124513215,132635260,39667704,2462244,41006424,214146208,54305743};
-	int first = 0, last = 50;
-	srandom(table[which&0xF]^table2[(which>>4)&0xF]);
-	
-	start.Reset();
-	for (int x = 0; x < 14; x++)
-	{
-		c.ApplyAction(start, random()%18);
-	}
-
-	//print the state
-	cout<<"*********************************"<<endl;
-    printf("corners: %" PRIu64 "\n", start.corner.state);
-	printf("edges: %" PRIu64 "\n", start.edge.state);
-	cout<<"*********************************"<<endl;
-}
-
 
 void warmup_model(torch::jit::script::Module& model, int gpu_core, int batch_size, int input_channels, int height, int width, int num_warmup_iterations) 
 {
@@ -68,7 +47,7 @@ torch::jit::script::Module load_model(int gpu_core)
 	return module;
 }
 
-void Test(string method)
+void Test(string method, int num, int steps)
 {
 	
 	RubiksCube cube;
@@ -78,7 +57,7 @@ void Test(string method)
 	Timer timer;
 	cube.SetPruneSuccessors(true);
 	
-	// load NN heuristics and use fp16 precision
+	load NN heuristics and use fp16 precision
 	torch::jit::script::Module module_1=load_model(0);
 	torch::jit::script::Module module_2=load_model(1);
 	module_1.eval();
@@ -86,7 +65,6 @@ void Test(string method)
 	module_1.to(at::kHalf);
 	module_2.to(at::kHalf);
 
-	
 	// use TensorRT to improve the performance of the models
 	std::vector<int64_t> input_shape = {largebatchsize+lengthEpsilon, channels, height, width};
 	torch_tensorrt::Input input(input_shape);
@@ -117,18 +95,19 @@ void Test(string method)
 	h.lookups.push_back({kLeafNode, 0, 0});
 	h.heuristics.push_back(&pdb);
 
+	double totalTime=0;
+	int totalExpansion = 0, totalGenerated = 0;
 
-	const auto numThreads = thread::hardware_concurrency()-2;
-
-	for (int x = 1; x < 2; x++)
+	for (int x = 0; x < num; x++)
 	{
-		GetRubikStep14Instance(start, x);
+		GetRandomN(start,steps,x);
 		
-		if (method=="Batch")
+		if (method=="BatchIDA")
 		{
 			printf("-=-=-BPIDA*-=-=-\n");
+			const auto numThreads = thread::hardware_concurrency()-2;
 			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
-			bida.SetNNHeuristics(trt_model_1,trt_model_2);
+			// bida.SetNNHeuristics(trt_model_1,trt_model_2);
 			bida.SetHeuristic(&h);
 			bida.InitializeList();	
 			timer.StartTimer();
@@ -137,8 +116,12 @@ void Test(string method)
 			printf("%llu nodes expanded; %llu generated\n", bida.GetNodesExpanded(), bida.GetNodesTouched());
 			printf("Solution path length %lu\n", rubikPath.size());
 			printf("%1.2f elapsed\n", timer.GetElapsedTime());
+
+			totalTime+=timer.GetElapsedTime();
+			totalExpansion+=bida.GetNodesExpanded();
+			totalGenerated+=bida.GetNodesTouched();
 		}
-		else if(method=="Parallel")
+		else if(method=="ParallelIDA")
 		{	
 			printf("-=-=-PIDA*-=-=-\n");
 			ParallelIDAStar<RubiksCube, RubiksState, RubiksAction> pida;
@@ -150,19 +133,56 @@ void Test(string method)
 			printf("Solution path length %lu\n", rubikPath.size());
 			printf("%1.2f elapsed\n", timer.GetElapsedTime());
 
-		}
-		else if(method=="Single")
-		{
+			totalTime+=timer.GetElapsedTime();
+			totalExpansion+=pida.GetNodesExpanded();
+			totalGenerated+=pida.GetNodesTouched();
 
 		}
-		else if(method=="Standard")
+		else if(method=="StandardIDA")
 		{
+			printf("-=-=-IDA*-=-=-\n");
+			IDAStar<RubiksState, RubiksAction> ida;
+			ida.SetHeuristic(&h);
+			timer.StartTimer();
+			ida.GetPath(&cube, start, goal, rubikPath);
+			timer.EndTimer();
+			printf("%llu nodes expanded; %llu generated\n", ida.GetNodesExpanded(), ida.GetNodesTouched());
+			printf("Solution path length %lu\n", rubikPath.size());
+			printf("%1.2f elapsed\n", timer.GetElapsedTime());
 
+			totalTime+=timer.GetElapsedTime();
+			totalExpansion+=ida.GetNodesExpanded();
+			totalGenerated+=ida.GetNodesTouched();
+		}
+		else if(method=="BatchA")
+		{
+			printf("-=-=-BatchA*-=-=-\n");
+			CNNHeuristicLookupBuffer buf;
+			DelayedHeuristicAStar<RubiksState, RubiksAction, RubiksCube, CNNHeuristicLookupBuffer> a1(1000);
+			a1.SetReopenNodes(true);
+			a1.SetHeuristic(&h);
+			timer.StartTimer();
+			a1.GetPath(&cube, start, goal, rubikPath);
+			timer.EndTimer();
+			printf("%llu nodes expanded; %llu generated\n", a1.GetNodesExpanded(), a1.GetNodesTouched());
+			printf("Solution path length %lu\n", rubikPath.size());
+			printf("%1.2f elapsed\n", timer.GetElapsedTime());
+
+			totalTime+=timer.GetElapsedTime();
+			totalExpansion+=a1.GetNodesExpanded();
+			totalGenerated+=a1.GetNodesTouched();
 		}
 		else
 			throw invalid_argument( "method does not exist." );
 
 	}
+
+	cout<<"****************************************************\n";
+	cout<<"****************************************************\n";
+	cout<<"average time: "<<totalTime/num<<'\n';
+	cout<<"average node expansion: "<<totalExpansion/num<<'\n';
+	cout<<"average node generation: "<<totalGenerated/num<<'\n';
+
 	
 }
 
@@ -172,8 +192,11 @@ int main(int argc, char *argv[])
     cudaRuntimeGetVersion(&runtime_version);
     std::cout << "CUDA Runtime Version: " << runtime_version << std::endl;
 	std::cout << "LibTorch version: " << TORCH_VERSION << std::endl;
+	
 	string method=argv[1];
-	Test(method);
+	int numTestcases=std::stoi(argv[2]);
+	int steps=std::stoi(argv[3]);
+	Test(method,numTestcases,steps);
 
 	return 0;
 }

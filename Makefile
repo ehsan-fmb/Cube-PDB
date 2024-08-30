@@ -14,7 +14,7 @@ CUDA_FLAGS := -L/usr/local/cuda-12.4/lib64 -lcudart
 LDFLAGS = -Wl,-no-undefined -Wl,--no-as-needed \
 -L./inc/hog2/bin/release -L/usr/local/include/torch_tensorrt -L/usr/local/lib -L/usr/lib/x86_64-linux-gnu -L$(LIBTORCH)/lib -ltorch -ltorch_cpu -ltorch_cuda \
 -ltorchtrt -lnvinfer -lnvonnxparser -lnvinfer_plugin -lc10_cuda -lc10 -Wl,-rpath,$(LIBTORCH)/lib $(CUDA_FLAGS)
-LDLIBS = -lgraph -lenvironments -lenvutil -lmapalgorithms -lalgorithms -lgraphalgorithms -lutils  -lSTUB 
+LDLIBS = -lgraph -lenvironments -lenvutil -lmapalgorithms -lalgorithms -lgraphalgorithms -lutils  -lSTUB
 
 # Define the directories
 SRC_DIR = src
