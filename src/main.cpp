@@ -57,7 +57,7 @@ void Test(string method, int num, int steps)
 	Timer timer;
 	cube.SetPruneSuccessors(true);
 	
-	load NN heuristics and use fp16 precision
+	// load NN heuristics and use fp16 precision
 	torch::jit::script::Module module_1=load_model(0);
 	torch::jit::script::Module module_2=load_model(1);
 	module_1.eval();
@@ -107,7 +107,7 @@ void Test(string method, int num, int steps)
 			printf("-=-=-BPIDA*-=-=-\n");
 			const auto numThreads = thread::hardware_concurrency()-2;
 			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
-			// bida.SetNNHeuristics(trt_model_1,trt_model_2);
+			bida.SetNNHeuristics(trt_model_1,trt_model_2);
 			bida.SetHeuristic(&h);
 			bida.InitializeList();	
 			timer.StartTimer();
