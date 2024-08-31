@@ -5,29 +5,11 @@
 #include "RubiksCube.h"
 #include <stdexcept>
 #include "Timer.h"
+#include "Instances.h"
+#include "PermutationPDB.h"
+#include "LexPermutationPDB.h"
 
 using namespace std;
-
-void GetRubikStep14Instance(RubiksState &start, int which)
-{
-	RubiksCube c;
-	int table[] = {52058078,116173544,208694125,131936966,141559500,133800745,194246206,50028346,167007978,207116816,163867037,119897198,201847476,210859515,117688410,121633885};
-	int table2[] = {145008714,165971878,154717942,218927374,182772845,5808407,19155194,137438954,13143598,124513215,132635260,39667704,2462244,41006424,214146208,54305743};
-	int first = 0, last = 50;
-	srandom(table[which&0xF]^table2[(which>>4)&0xF]);
-	
-	start.Reset();
-	for (int x = 0; x < 14; x++)
-	{
-		c.ApplyAction(start, random()%18);
-	}
-
-	//print the state
-	cout<<"*********************************"<<endl;
-    printf("corners: %" PRIu64 "\n", start.corner.state);
-	printf("edges: %" PRIu64 "\n", start.edge.state);
-	cout<<"*********************************"<<endl;
-}
 
 torch::jit::script::Module load_model(int gpu_core)
 {	
@@ -56,12 +38,22 @@ torch::jit::script::Module load_model(int gpu_core)
 void Test(string method)
 {
 	
+	// rubik's cube environment
 	RubiksCube cube;
 	RubiksState start, goal;
 	goal.Reset();
 	std::vector<RubiksAction> rubikPath;
 	Timer timer;
 	cube.SetPruneSuccessors(true);
+
+	// STP environment
+	MNPuzzle<4, 4> mnp;
+	MNPuzzleState<4, 4> s;
+	MNPuzzleState<4, 4> g;
+	std::vector<slideDir> stpPath;
+	g.Reset();
+	mnp.StoreGoal(g);
+
 	
 	// load NN heuristics and use fp16 precision
 	torch::jit::script::Module module_1=load_model(0);
@@ -72,62 +64,82 @@ void Test(string method)
 	module_2.to(at::kHalf);
 
 	// load 8-corners pdb heuristic
-	vector<int> blank;
-	vector<int> corners;
-	corners = {0, 1, 2, 3, 4, 5, 6, 7};
-	RubikPDB pdb(&cube, goal, blank, corners);
-	pdb.Load("../pdbs/8-corners/");
-	
-	Heuristic<RubiksState> h;
+	// vector<int> blank;
+	// vector<int> corners;
+	// corners = {0, 1, 2, 3, 4, 5, 6, 7};
+	// RubikPDB pdb(&cube, goal, blank, corners);
+	// pdb.Load("../pdbs/8-corners/");
+	// Heuristic<RubiksState> h;
+	// h.lookups.push_back({kMaxNode, 1, 1});
+	// h.lookups.push_back({kLeafNode, 0, 0});
+	// h.heuristics.push_back(&pdb);
+
+	// load 1-7 pdb heuristic
+	std::vector<int> p1 = {0,1,2,3,4,5,6,7};
+	LexPermutationPDB<MNPuzzleState<4, 4>, slideDir, MNPuzzle<4, 4>> pdb(&mnp, g, p1);
+	pdb.Load("../pdbs/");
+	Heuristic<MNPuzzleState<4, 4>> h;
 	h.lookups.push_back({kMaxNode, 1, 1});
 	h.lookups.push_back({kLeafNode, 0, 0});
 	h.heuristics.push_back(&pdb);
 
 
 	const auto numThreads = thread::hardware_concurrency()-1;
+	double totalTime=0;
+	int totalExpansion = 0, totalGenerated = 0;
 
-	for (int x = 1; x < 2; x++)
+	for (int x = 0; x < 50; x++)
 	{
-		GetRubikStep14Instance(start, x);
+		// GetRandomN(start,11,x);
+		s=GetKorfInstance(x);
 		
 		if (method=="Batch")
 		{
 			printf("-=-=-BPIDA*-=-=-\n");
-			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
+			// BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
+			BatchIDAStar<MNPuzzle<4, 4>, MNPuzzleState<4, 4>, slideDir> bida(numThreads);
 			bida.SetNNHeuristics(module_1,module_2);
 			bida.SetHeuristic(&h);
 			bida.InitializeList();	
 			timer.StartTimer();
-			bida.GetPath(&cube, start, goal, rubikPath);
+			// bida.GetPath(&cube, start, goal, rubikPath);
+			bida.GetPath(&mnp, s, g, stpPath);
 			timer.EndTimer();
 			printf("%llu nodes expanded; %llu generated\n", bida.GetNodesExpanded(), bida.GetNodesTouched());
 			printf("Solution path length %lu\n", rubikPath.size());
 			printf("%1.2f elapsed\n", timer.GetElapsedTime());
+
+			totalTime+=timer.GetElapsedTime();
+			totalExpansion+=bida.GetNodesExpanded();
+			totalGenerated+=bida.GetNodesTouched();
 		}
 		else if(method=="Parallel")
 		{	
 			printf("-=-=-PIDA*-=-=-\n");
-			ParallelIDAStar<RubiksCube, RubiksState, RubiksAction> pida;
+			// ParallelIDAStar<RubiksCube, RubiksState, RubiksAction> pida;
+			ParallelIDAStar<MNPuzzle<4, 4>, MNPuzzleState<4, 4>, slideDir> pida;
 			pida.SetHeuristic(&h);
 			timer.StartTimer();
-			pida.GetPath(&cube, start, goal, rubikPath);
+			// pida.GetPath(&cube, start, goal, rubikPath);
+			pida.GetPath(&mnp, s, g, stpPath);
 			timer.EndTimer();
 			printf("%llu nodes expanded; %llu generated\n", pida.GetNodesExpanded(), pida.GetNodesTouched());
 			printf("Solution path length %lu\n", rubikPath.size());
 			printf("%1.2f elapsed\n", timer.GetElapsedTime());
 
-		}
-		else if(method=="Single")
-		{
-
-		}
-		else if(method=="Standard")
-		{
+			totalTime+=timer.GetElapsedTime();
+			totalExpansion+=pida.GetNodesExpanded();
+			totalGenerated+=pida.GetNodesTouched();
 
 		}
 		else
 			throw invalid_argument( "method does not exist." );
-
+		
+		cout<<"****************************************************\n";
+		cout<<"****************************************************\n";
+		cout<<"average time: "<<totalTime/50<<'\n';
+		cout<<"average node expansion: "<<totalExpansion/50<<'\n';
+		cout<<"average node generation: "<<totalGenerated/50<<'\n';
 	}
 	
 }
@@ -137,7 +149,7 @@ int main(int argc, char *argv[])
 	int runtime_version = 0;
     cudaRuntimeGetVersion(&runtime_version);
     std::cout << "CUDA Runtime Version: " << runtime_version << std::endl;
-	std::cout << "LibTorch version: " << TORCH_VERSION << std::endl;
+	std::cout << "LibTorch version: " << TORCH_VERSION;
 	string method=argv[1];
 	Test(method);
 

@@ -20,11 +20,11 @@ constexpr int stackNum=60;
 constexpr int stackChunk=30;
 constexpr int maxChildrenNum=20;
 
-template <class state>
+template <class state,class action>
 struct StackUnit {
 	state node;
 	int index;
-	int last;
+	action last;
 	double gcost;
 
 	// Default constructor
@@ -69,8 +69,8 @@ private:
 	unsigned long long nodesExpanded, nodesTouched;
 	
 	void StartThreadedIteration(environment env, state startState, double bound,int threadID);
-	void AddWorkUnit(environment& env, StackUnit<state>& unit,BatchworkUnit<action>& localWork,double bound,int& nextValue,bool& nodeleft,int ID);
-	bool DoIteration(environment *env, vector<StackUnit<state>>& nodes,double bound,
+	void AddWorkUnit(environment& env, StackUnit<state,action>& unit,BatchworkUnit<action>& localWork,double bound,int& nextValue,bool& nodeleft,int ID);
+	bool DoIteration(environment *env, vector<StackUnit<state,action>>& nodes,double bound,
 													BatchworkUnit<action> &w, vector<action> &actions,
 													vector<state>& children,vector<int*>& indexes,vector<BatchworkUnit<action>*>& works);
 	void GenerateWork(environment *env,
@@ -192,7 +192,7 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 	vector<action> act;
 	env->GetActions(from, act);
 	
-	double rootH = 11;
+	double rootH =heuristic->HCost(from, to);
 	UpdateNextBound(0, rootH);
 	
 	// builds a list of all states at a fixed depth
@@ -218,8 +218,8 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 		fCostHistogram.resize(nextBound+1);
 		threads.resize(0);
 		
-		cout<<"counter for feeder: "<<feedcounter<<endl;
-		cout<<"totalsize of list: "<<totalsize<<endl;
+		// cout<<"counter for feeder: "<<feedcounter<<endl;
+		// cout<<"totalsize of list: "<<totalsize<<endl;
 		printf("Starting iteration with bound %f; %" PRId64 " expanded, %" PRId64 " generated\n", nextBound, nodesExpanded, nodesTouched);
 		fflush(stdout); 
 		
@@ -269,7 +269,7 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 
 
 template <class environment, class state, class action>
-void BatchIDAStar<environment, state, action>::AddWorkUnit(environment& env, StackUnit<state>& unit,BatchworkUnit<action>& localWork,
+void BatchIDAStar<environment, state, action>::AddWorkUnit(environment& env, StackUnit<state,action>& unit,BatchworkUnit<action>& localWork,
 															double bound,int& nextValue,bool& nodeleft,int ID)
 {
 	// All values put in before threads start. Once the queue is empty we're done
@@ -319,7 +319,7 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 	vector<BatchworkUnit<action>*> workCache;
 	vector<state> stateCache;
 	vector<int*> indexCache;
-	array<vector<StackUnit<state>>, stackNum> stacks;
+	array<vector<StackUnit<state,action>>, stackNum> stacks;
 	array<BatchworkUnit<action>,stackNum> threadworks;
 	array<int,stackNum>nextvalues;
 	array<int,stackNum>IDS;
@@ -340,7 +340,7 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 	{
 		stacks[i].reserve(numNodesWork);
 		
-		StackUnit<state> unit;
+		StackUnit<state,action> unit;
 
 		IDS[i]=threadID*stackNum+i;
 		unit.index=0;
@@ -366,7 +366,7 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 				// save the work
 				work[nextvalues[counter]] = threadworks[counter];
 				
-				StackUnit<state> unit;
+				StackUnit<state,action> unit;
 				unit.index=0;
 				unit.node=startState;
 
@@ -407,7 +407,7 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 }
 
 template <class environment, class state, class action>
-bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, vector<StackUnit<state>>& nodes,double bound,
+bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, vector<StackUnit<state,action>>& nodes,double bound,
 															  BatchworkUnit<action> &w, vector<action> &actions,
 															  vector<state>& children,vector<int*>& indexes,vector<BatchworkUnit<action>*>& works)
 {
@@ -419,7 +419,7 @@ bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, vec
 			return false;	
 	}	
 
-	StackUnit<state> stackunit=std::move(nodes.back());
+	StackUnit<state,action> stackunit=std::move(nodes.back());
 	state& currState=stackunit.node;
 	int& node_index=stackunit.index;
 	double& g=stackunit.gcost;
@@ -466,7 +466,7 @@ bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, vec
 		if (actions[x] == forbiddenAction) 
 			continue;
 				
-		StackUnit<state> unit;
+		StackUnit<state,action> unit;
 		
 		unit.node=currState;
 
