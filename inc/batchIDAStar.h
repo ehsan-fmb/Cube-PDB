@@ -12,15 +12,14 @@
 #include <stdexcept>
 #include <cassert>
 
-
-constexpr int largebatchsize=1000;
+constexpr int largebatchsize=12000;
 constexpr int largetimeout=12000;
 constexpr int numNodesWork=50000;
-constexpr int stackNum=30;
-constexpr int stackChunk=30;
+constexpr int stackNum=50;
+constexpr int stackChunk=50;
 constexpr int maxChildrenNum=20;
 
-template <class state,class action>
+template <class state, class action>
 struct StackUnit {
 	state node;
 	int index;
@@ -68,18 +67,18 @@ public:
 private:
 	unsigned long long nodesExpanded, nodesTouched;
 	
-	void StartThreadedIteration(environment env, state startState, double bound,int threadID);
+	void StartThreadedIteration(environment env, state startState, double bound,int threadID,LargeBatch<state,action>& Batch);
 	void AddWorkUnit(environment& env, StackUnit<state,action>& unit,BatchworkUnit<action>& localWork,double bound,int& nextValue,bool& nodeleft,int ID);
 	bool DoIteration(environment *env, vector<StackUnit<state,action>>& nodes,double bound,
 													BatchworkUnit<action> &w, vector<action> &actions,
-													vector<state>& children,vector<int*>& indexes,vector<BatchworkUnit<action>*>& works);
+													vector<state>& children,vector<int*>& indexes,BatchworkUnit<action>*& fw,int id);
 	void GenerateWork(environment *env,
 					  action forbiddenAction, state &currState,
 					  vector<action> &thePath);
 	void UpdateNextBound(double currBound, double fCost);
-	void GetNNOutput(int n);
+	void GetNNOutput(torch::jit::script::Module& module,LargeBatch<state,action>& Batch,int n,torch::Tensor& outputs,torch::Tensor& tmp_hcosts);
 	double GetSavedHCost(int ID,int index);
-	void FeedLargeBatch();
+	void FeedLargeBatch(LargeBatch<state,action>& Batch,torch::jit::script::Module& module,torch::Tensor& outputs,torch::Tensor& tmp_hcosts);
 	state goal,start;
 	double nextBound;
 	Heuristic<state> *heuristic;
@@ -92,23 +91,27 @@ private:
 	vector<thread*> threads;
 	vector<int>SavedHCosts;
 	SharedQueue<int> q;
-	LargeBatch<state,action> largeBatch;
+	LargeBatch<state,action> largeBatch1,largeBatch2;
 	int foundSolution;
     bool finishAfterSolution,isRoot;
 	bool stopfeeder;
 	string env_name;
 	int feedcounter,totalsize,numThreads;
-	torch::Tensor outputs,tmp_hcosts,narrow_cpu_tensor,gpu_slice,hcost_slice,tmp_slice;
+	torch::Tensor outputs1,outputs2,tmp_hcosts1,tmp_hcosts2;
 	MicroTimer timer;
+	std::vector<std::condition_variable> firstWorks;
 };
 
 
 template <class environment, class state, class action>
 BatchIDAStar<environment, state, action>::BatchIDAStar(int nT,string name):
-finishAfterSolution(false),largeBatch(largebatchsize,largetimeout,nT*stackNum),isRoot(true),workLocks(nT*stackNum),numThreads(nT),env_name(name)
+finishAfterSolution(false),largeBatch1(largebatchsize,largetimeout,(nT*stackNum)/2,0),largeBatch2(largebatchsize,largetimeout,(nT*stackNum)/2,1)
+										,isRoot(true),workLocks(nT*stackNum),numThreads(nT),firstWorks(nT),env_name(name)
 { 	
-	outputs= torch::empty({largebatchsize+lengthEpsilon,classNum}).to(devices[1]);
-	tmp_hcosts=torch::zeros({largebatchsize+lengthEpsilon},torch::dtype(torch::kInt64));
+	outputs1= torch::empty({largebatchsize+lengthEpsilon,classNum}).to(devices[0]);
+	outputs2= torch::empty({largebatchsize+lengthEpsilon,classNum}).to(devices[1]);
+	tmp_hcosts1=torch::zeros({largebatchsize+lengthEpsilon},torch::dtype(torch::kInt64));
+	tmp_hcosts2=torch::zeros({largebatchsize+lengthEpsilon},torch::dtype(torch::kInt64));
 }
 
 template <class environment, class state, class action>
@@ -129,7 +132,6 @@ void BatchIDAStar<environment, state, action>::GenerateWork(environment *env,
 															   action forbiddenAction, state &currState,
 															   vector<action> &thePath)
 {
-
 	if (thePath.size() >= batchWorkDepth)
 	{
 		BatchworkUnit<action> w;
@@ -207,10 +209,13 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 		work[x].unitNumber = x;
 	printf("%lu pieces of work generated\n", work.size());
 	foundSolution = work.size() + 1;
-
+	
 	// define one thread that feeds the nn with large batches 
 	stopfeeder=false;
-	thread largeBatchFeeder(&BatchIDAStar<environment, state, action>::FeedLargeBatch, this);
+	thread largeBatchFeeder1(&BatchIDAStar<environment, state, action>::FeedLargeBatch, this,std::ref(largeBatch1),std::ref(model1)
+								,std::ref(outputs1),std::ref(tmp_hcosts1));
+	thread largeBatchFeeder2(&BatchIDAStar<environment, state, action>::FeedLargeBatch, this,std::ref(largeBatch2),std::ref(model2)
+								,std::ref(outputs2),std::ref(tmp_hcosts2));
 	feedcounter=0;
 	totalsize=0;
 
@@ -223,6 +228,8 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 		fCostHistogram.resize(nextBound+1);
 		threads.resize(0);
 		
+		// cout<<"counter for feeder: "<<feedcounter<<endl;
+		// cout<<"totalsize of list: "<<totalsize<<endl;
 		printf("Starting iteration with bound %f; %" PRId64 " expanded, %" PRId64 " generated\n", nextBound, nodesExpanded, nodesTouched);
 		fflush(stdout); 
 		
@@ -232,8 +239,12 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 		}
 		for (size_t x = 0; x < numThreads; x++)
 		{
-			threads.push_back(new thread(&BatchIDAStar<environment, state, action>::StartThreadedIteration, this,
-												 *env, from, nextBound,x));
+			if(x<numThreads/2)
+				threads.push_back(new thread(&BatchIDAStar<environment, state, action>::StartThreadedIteration, this,
+												 *env, from, nextBound,x,std::ref(largeBatch1)));
+			else
+				threads.push_back(new thread(&BatchIDAStar<environment, state, action>::StartThreadedIteration, this,
+												 *env, from, nextBound,x,std::ref(largeBatch2)));
 		}
 		for (int x = 0; x < threads.size(); x++)
 		{
@@ -264,7 +275,8 @@ void BatchIDAStar<environment, state, action>::GetPath(environment *env,
 		if (thePath.size() != 0)
 		{
 			stopfeeder=true;
-			largeBatchFeeder.join();
+			largeBatchFeeder1.join();
+			largeBatchFeeder2.join();
 			return;
 		}
 	}
@@ -276,58 +288,60 @@ void BatchIDAStar<environment, state, action>::AddWorkUnit(environment& env, Sta
 															double bound,int& nextValue,bool& nodeleft,int ID)
 {
 	// All values put in before threads start. Once the queue is empty we're done
-	bool passedLimit = true;
-	while(passedLimit)
+	
+	// bool passedLimit = true;
+	// while(passedLimit)
+	// {
+	if (q.Remove(nextValue) == false)
 	{
-
-		if (q.Remove(nextValue) == false)
-		{
-			nodeleft= false;
-			return;
-		}
-		else
-			nodeleft= true;
-		
-		unit.gcost = 0;
-		localWork = work[nextValue];
-		localWork.solution.resize(0);
-		localWork.gHistogram.clear();
-		localWork.gHistogram.resize(bound+1);
-		localWork.fHistogram.clear();
-		localWork.fHistogram.resize(bound+1);
-		localWork.nextBound = 10*bound;//FIXME: Better ways to do this
-		localWork.expanded = 0;
-		localWork.touched = 0;
-		localWork.nodeCount=0;
-		localWork.processing=false;
-		localWork.ID=ID;
-		
-		passedLimit = false;
-		for (int x = 0; x < batchWorkDepth; x++)
-		{
-			unit.gcost += env.GCost(unit.node, localWork.pre[x]);
-			env.ApplyAction(unit.node, localWork.pre[x]);
-
-			if (!passedLimit && fgreater(unit.gcost+heuristic->HCost(unit.node, goal), bound))
-			{
-				localWork.nextBound = unit.gcost+heuristic->HCost(unit.node, goal);
-				passedLimit = true;
-				unit.node=start;
-				work[nextValue] = localWork;
-				break;
-			}
-
-		}
-		unit.last = localWork.pre[batchWorkDepth-1];
+		nodeleft= false;
+		return;
 	}
+	else
+		nodeleft= true;
+	
+	unit.gcost = 0;
+	localWork = work[nextValue];
+	localWork.solution.resize(0);
+	localWork.gHistogram.clear();
+	localWork.gHistogram.resize(bound+1);
+	localWork.fHistogram.clear();
+	localWork.fHistogram.resize(bound+1);
+	localWork.nextBound = 10*bound;//FIXME: Better ways to do this
+	localWork.expanded = 0;
+	localWork.touched = 0;
+	localWork.nodeCount=0;
+	localWork.processing=false;
+	localWork.ID=ID;
+
+	// passedLimit = false;
+	for (int x = 0; x < batchWorkDepth; x++)
+	{
+		unit.gcost += env.GCost(unit.node, localWork.pre[x]);
+		env.ApplyAction(unit.node, localWork.pre[x]);
+
+		// if (!passedLimit && fgreater(unit.gcost+heuristic->HCost(unit.node, goal), bound))
+		// {
+		// 	localWork.nextBound = unit.gcost+heuristic->HCost(unit.node, goal);
+		// 	passedLimit = true;
+		// 	unit.node=start;
+		// 	work[nextValue] = localWork;
+		// 	break;
+		// }
+
+	}
+
+	unit.last = localWork.pre[batchWorkDepth-1];
+	// }
 }
 
 template <class environment, class state, class action>
-void BatchIDAStar<environment, state, action>::StartThreadedIteration(environment env, state startState, double bound,int threadID)
+void BatchIDAStar<environment, state, action>::StartThreadedIteration(environment env, state startState, double bound,
+												int threadID,LargeBatch<state,action>& Batch)
 {
 		
 	vector<action> actCache;
-	vector<BatchworkUnit<action>*> workCache;
+	BatchworkUnit<action>* threadFirstWork;
 	vector<state> stateCache;
 	vector<int*> indexCache;
 	array<vector<StackUnit<state,action>>, stackNum> stacks;
@@ -337,7 +351,6 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 
 
 	// allocate memory for vectors
-	workCache.reserve(stackNum);
 	stateCache.reserve(maxChildrenNum*stackNum);
 	indexCache.reserve(maxChildrenNum*stackNum);
 
@@ -358,7 +371,6 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 		unit.node=startState;
 
 		AddWorkUnit(env,unit,threadworks[i],bound,nextvalues[i],nodeLeft,IDS[i]);
-		
 		if(!nodeLeft)
 		{	
 			IDS[i]=-1;
@@ -402,7 +414,7 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 				stacks[counter].push_back(std::move(unit));	
 			}
 
-			costready=DoIteration(&env, stacks[counter], bound, threadworks[counter], actCache,stateCache,indexCache,workCache);
+			costready=DoIteration(&env, stacks[counter], bound, threadworks[counter], actCache,stateCache,indexCache,threadFirstWork,threadID);
 		}
 
 		counter++;
@@ -411,16 +423,14 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 		{
 			if(!indexCache.empty())
 			{
-				largeBatch.Add(stateCache,indexCache,workCache);
+				Batch.Add(stateCache,indexCache,threadFirstWork);
 				stateCache.clear();
 				indexCache.clear();
-				workCache.clear();
 			}
 		}
 
 		if(counter==stackNum)
 			counter=0;	
-		
 	}
 
 }
@@ -428,14 +438,13 @@ void BatchIDAStar<environment, state, action>::StartThreadedIteration(environmen
 template <class environment, class state, class action>
 bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, vector<StackUnit<state,action>>& nodes,double bound,
 															  BatchworkUnit<action> &w, vector<action> &actions,
-															  vector<state>& children,vector<int*>& indexes,vector<BatchworkUnit<action>*>& works)
+															  vector<state>& children,vector<int*>& indexes,BatchworkUnit<action>*& fw,int id)
 {
 
 	// check if work is in process
 	{
-		std::lock_guard<std::mutex> lock(workLocks[w.ID]);
-		if(w.processing)
-			return false;	
+		std::unique_lock<std::mutex> lock(workLocks[w.ID]);
+		firstWorks[id].wait(lock,[&]{ return !w.processing; });	
 	}	
 
 	StackUnit<state,action> stackunit=std::move(nodes.back());
@@ -444,11 +453,11 @@ bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, vec
 	double& g=stackunit.gcost;
 	action& forbiddenAction=stackunit.last;
 
-	double h=double(GetSavedHCost(w.ID,node_index));
+	// double h=double(GetSavedHCost(w.ID,node_index));
 	nodes.pop_back();
 
 	// To get pdb results
-	h=heuristic->HCost(currState, goal);
+	double h=heuristic->HCost(currState, goal);
 
 	if (fgreater(g+h, bound))
 	{
@@ -477,6 +486,11 @@ bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, vec
 	w.expanded++;
 	w.gHistogram[g]++;
 	w.fHistogram[g+h]++;
+
+
+	// set the first work if the batch is empty
+	if(children.empty())
+		fw=&w;
 
 	// save nodes in large list to get their values when search
 	// is back to upper levels
@@ -512,7 +526,6 @@ bool BatchIDAStar<environment, state, action>::DoIteration(environment *env, vec
 		
 	}
 
-	works.push_back(&w);
 	return false;
 }
 
@@ -524,61 +537,58 @@ double BatchIDAStar<environment, state, action>::GetSavedHCost(int ID,int index)
 }
 
 template <class environment, class state, class action>
-void BatchIDAStar<environment, state, action>::GetNNOutput(int n)
+void BatchIDAStar<environment, state, action>::GetNNOutput(torch::jit::script::Module& module,LargeBatch<state,action>& Batch,int n,
+												torch::Tensor& outputs,torch::Tensor& tmp_hcosts)
 {
-    torch::InferenceMode inference_mode;
-
-	narrow_cpu_tensor = largeBatch.samples.narrow(0, 0, n);
-	gpu_slice = largeBatch.gpu_input.slice(0, 0, n);
-	tmp_slice=tmp_hcosts.narrow(0,0,n);
-	hcost_slice=largeBatch.h_values.slice(0,0,n);
+	torch::InferenceMode inference_mode;
+	cudaSetDevice(Batch.num);
 	
-	at::cuda::CUDAStreamGuard guard1(largeBatch.stream1);
-	gpu_slice.copy_(narrow_cpu_tensor, true);
+	Batch.narrow_cpu_tensor = Batch.samples.narrow(0, 0, n);
+	Batch.gpu_slice = Batch.gpu_input.slice(0, 0, n);
+	Batch.tmp_slice=tmp_hcosts.narrow(0,0,n);
+	Batch.hcost_slice=Batch.h_values.slice(0,0,n);
+	
+	at::cuda::CUDAStreamGuard guard1(Batch.stream1);
+	Batch.gpu_slice.copy_(Batch.narrow_cpu_tensor, true);
 
-	at::cuda::CUDAStreamGuard guard2(largeBatch.stream2);
-	outputs=model2.forward({largeBatch.gpu_input}).toTensor();
-	largeBatch.h_values= torch::argmax(outputs,1);
+	at::cuda::CUDAStreamGuard guard2(Batch.stream2);
+	outputs=module.forward({Batch.gpu_input}).toTensor();
+	Batch.h_values= torch::argmax(outputs,1);
 
-	at::cuda::CUDAStreamGuard guard3(largeBatch.stream3);
-	tmp_slice.copy_(hcost_slice,true);
+	// at::cuda::CUDAStreamGuard guard3(Batch.stream3);
+	// Batch.tmp_slice.copy_(Batch.hcost_slice,true);
 
-	largeBatch.stream1.synchronize();
-	largeBatch.stream2.synchronize();
-	largeBatch.stream3.synchronize();
+	Batch.stream1.synchronize();
+	Batch.stream2.synchronize();
+	// Batch.stream3.synchronize();
 }
 
 template <class environment, class state, class action>
-void BatchIDAStar<environment, state, action>::FeedLargeBatch()
+void BatchIDAStar<environment, state, action>::FeedLargeBatch(LargeBatch<state,action>& Batch,torch::jit::script::Module& module,
+							torch::Tensor& outputs,torch::Tensor& tmp_hcosts)
 {
 	while (!stopfeeder)
 	{
 		int wStart,uStart,wLength,uLength;
-		bool full=largeBatch.IsFull(wStart,uStart,wLength,uLength);
-
-		// cout<<"batch size: "<<uLength<<endl;
+		bool full=Batch.IsFull(wStart,uStart,wLength,uLength);
 
 		if(!full)
 			continue; 
 
 		// get hcosts from nn
-		GetNNOutput(uLength);
-		auto accessor= tmp_hcosts.accessor<long,1>();
+		GetNNOutput(module,Batch,uLength,outputs,tmp_hcosts);
 		
-		feedcounter++;
-		totalsize=totalsize+largeBatch.mark;
-		for (size_t i = 0; i <uLength; i++)
+		// auto accessor= tmp_hcosts.accessor<long,1>();
+		// for (size_t i = 0; i <uLength; i++)
+		// {
+		// 	//units
+		// 	*Batch.units[uStart+i]=accessor[i];
+		// }
+		for (size_t i = 0; i <wLength; i++)
 		{
-			//units
-			// *largeBatch.units[uStart+i]=accessor[i];
-			
-			//works
-			if(i<wLength)
-			{
-				std::unique_lock<std::mutex> lock(workLocks[largeBatch.worksInProcess[wStart+i]->ID]);
-				largeBatch.worksInProcess[wStart+i]->processing=false;	
-			}
-		
+			std::unique_lock<std::mutex> lock(workLocks[Batch.worksInProcess[wStart+i]->ID]);
+			Batch.worksInProcess[wStart+i]->processing=false;
+			firstWorks[Batch.worksInProcess[wStart+i]->ID/stackNum].notify_one();	
 		}
 
 	}
