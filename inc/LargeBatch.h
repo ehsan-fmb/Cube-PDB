@@ -23,10 +23,11 @@ const int channels=7;
 const int width=4;
 const int height=4;
 const int classNum=8;
+constexpr int batchWorkDepth=5;
 
 template <class action>
 struct BatchworkUnit {
-	action pre[workDepth];
+	action pre[batchWorkDepth];
 	vector<action> solution;
 	vector<int> gHistogram;
 	vector<int> fHistogram;

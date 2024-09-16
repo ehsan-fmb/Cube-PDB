@@ -50,12 +50,21 @@ torch::jit::script::Module load_model(int gpu_core)
 void Test(string method, int num, int steps)
 {
 	
+	// rubik's cube environment
 	RubiksCube cube;
 	RubiksState start, goal;
 	goal.Reset();
 	std::vector<RubiksAction> rubikPath;
 	Timer timer;
 	cube.SetPruneSuccessors(true);
+
+	// STP environment
+	MNPuzzle<4, 4> mnp;
+	MNPuzzleState<4, 4> s;
+	MNPuzzleState<4, 4> g;
+	std::vector<slideDir> stpPath;
+	g.Reset();
+	mnp.StoreGoal(g);
 	
 	// load NN heuristics and use fp16 precision
 	torch::jit::script::Module module_1=load_model(0);
@@ -89,11 +98,29 @@ void Test(string method, int num, int steps)
 	corners = {0, 1, 2, 3, 4, 5, 6, 7};
 	RubikPDB pdb(&cube, goal, blank, corners);
 	pdb.Load("../pdbs/8-corners/");
-	
 	Heuristic<RubiksState> h;
 	h.lookups.push_back({kMaxNode, 1, 1});
 	h.lookups.push_back({kLeafNode, 0, 0});
 	h.heuristics.push_back(&pdb);
+
+
+	// load 1-7 pdb heuristic
+	// std::vector<int> p1 = {0,1,2,3,4,5,6,7};
+	// std::vector<int> p2 = {0,8,9,10,11,12,13,14,15};
+	// STPLexPDB<4, 4> pdb1(&mnp, g, p1);
+	// STPLexPDB<4, 4> pdb2(&mnp, g, p2);
+	// mnp.SetPattern(p1);
+	// pdb1.Load("../pdbs/");
+	// mnp.SetPattern(p2);
+	// pdb2.Load("../pdbs/");
+	// Heuristic<MNPuzzleState<4, 4>> h;
+	// h.lookups.push_back({kAddNode, 1, 3});
+	// h.lookups.push_back({kLeafNode, 0, 0});
+	// h.lookups.push_back({kLeafNode, 1, 1});
+	// h.heuristics.push_back(&pdb1);
+	// h.heuristics.push_back(&pdb2);
+
+
 
 	double totalTime=0;
 	int totalExpansion = 0, totalGenerated = 0;
@@ -101,20 +128,25 @@ void Test(string method, int num, int steps)
 	for (int x = 0; x < num; x++)
 	{
 		GetRandomN(start,steps,x);
+		// s=GetKorfInstance(x);
 		
 		if (method=="BatchIDA")
 		{
 			printf("-=-=-BPIDA*-=-=-\n");
 			const auto numThreads = thread::hardware_concurrency()-2;
-			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads);
+			BatchIDAStar<RubiksCube, RubiksState, RubiksAction> bida(numThreads,"RC");
+			// BatchIDAStar<MNPuzzle<4, 4>, MNPuzzleState<4, 4>, slideDir> bida(numThreads,"STP");
+			g.Reset();
 			bida.SetNNHeuristics(trt_model_1,trt_model_2);
 			bida.SetHeuristic(&h);
 			bida.InitializeList();	
 			timer.StartTimer();
 			bida.GetPath(&cube, start, goal, rubikPath);
+			// bida.GetPath(&mnp, s, g, stpPath);
 			timer.EndTimer();
 			printf("%llu nodes expanded; %llu generated\n", bida.GetNodesExpanded(), bida.GetNodesTouched());
 			printf("Solution path length %lu\n", rubikPath.size());
+			// printf("Solution path length %lu\n", stpPath.size());
 			printf("%1.2f elapsed\n", timer.GetElapsedTime());
 
 			totalTime+=timer.GetElapsedTime();
@@ -123,54 +155,65 @@ void Test(string method, int num, int steps)
 		}
 		else if(method=="ParallelIDA")
 		{	
-			printf("-=-=-PIDA*-=-=-\n");
-			ParallelIDAStar<RubiksCube, RubiksState, RubiksAction> pida;
-			pida.SetHeuristic(&h);
-			timer.StartTimer();
-			pida.GetPath(&cube, start, goal, rubikPath);
-			timer.EndTimer();
-			printf("%llu nodes expanded; %llu generated\n", pida.GetNodesExpanded(), pida.GetNodesTouched());
-			printf("Solution path length %lu\n", rubikPath.size());
-			printf("%1.2f elapsed\n", timer.GetElapsedTime());
+			// printf("-=-=-PIDA*-=-=-\n");
+			// // ParallelIDAStar<RubiksCube, RubiksState, RubiksAction> pida;
+			// ParallelIDAStar<MNPuzzle<4, 4>, MNPuzzleState<4, 4>, slideDir> pida;
+			// g.Reset();
+			// pida.SetHeuristic(&h);
+			// timer.StartTimer();
+			// // pida.GetPath(&cube, start, goal, rubikPath);
+			// pida.GetPath(&mnp, s, g, stpPath);
+			// timer.EndTimer();
+			// printf("%llu nodes expanded; %llu generated\n", pida.GetNodesExpanded(), pida.GetNodesTouched());
+			// // printf("Solution path length %lu\n", rubikPath.size());
+			// printf("Solution path length %lu\n", stpPath.size());
+			// printf("%1.2f elapsed\n", timer.GetElapsedTime());
 
-			totalTime+=timer.GetElapsedTime();
-			totalExpansion+=pida.GetNodesExpanded();
-			totalGenerated+=pida.GetNodesTouched();
+			// totalTime+=timer.GetElapsedTime();
+			// totalExpansion+=pida.GetNodesExpanded();
+			// totalGenerated+=pida.GetNodesTouched();
 
 		}
 		else if(method=="StandardIDA")
 		{
-			printf("-=-=-IDA*-=-=-\n");
-			IDAStar<RubiksState, RubiksAction> ida;
-			ida.SetHeuristic(&h);
-			timer.StartTimer();
-			ida.GetPath(&cube, start, goal, rubikPath);
-			timer.EndTimer();
-			printf("%llu nodes expanded; %llu generated\n", ida.GetNodesExpanded(), ida.GetNodesTouched());
-			printf("Solution path length %lu\n", rubikPath.size());
-			printf("%1.2f elapsed\n", timer.GetElapsedTime());
+			// printf("-=-=-StandardIDA*-=-=-\n");
+			// // IDAStar<RubiksState, RubiksAction> ida;
+			// IDAStar<MNPuzzleState<4, 4>, slideDir> ida;
+			// g.Reset();
+			// ida.SetHeuristic(&h);
+			// timer.StartTimer();
+			// // ida.GetPath(&cube, start, goal, rubikPath);
+			// ida.GetPath(&mnp, s, g, stpPath);
+			// timer.EndTimer();
+			// printf("%llu nodes expanded; %llu generated\n", ida.GetNodesExpanded(), ida.GetNodesTouched());
+			// printf("Solution path length %lu\n", stpPath.size());
+			// // printf("Solution path length %lu\n", rubikPath.size());
+			// printf("%1.2f elapsed\n", timer.GetElapsedTime());
 
-			totalTime+=timer.GetElapsedTime();
-			totalExpansion+=ida.GetNodesExpanded();
-			totalGenerated+=ida.GetNodesTouched();
+			// totalTime+=timer.GetElapsedTime();
+			// totalExpansion+=ida.GetNodesExpanded();
+			// totalGenerated+=ida.GetNodesTouched();
 		}
 		else if(method=="BatchA")
 		{
-			printf("-=-=-BatchA*-=-=-\n");
-			CNNHeuristicLookupBuffer buf;
-			DelayedHeuristicAStar<RubiksState, RubiksAction, RubiksCube, CNNHeuristicLookupBuffer> a1(1000);
-			a1.SetReopenNodes(true);
-			a1.SetHeuristic(&h);
-			timer.StartTimer();
-			a1.GetPath(&cube, start, goal, rubikPath);
-			timer.EndTimer();
-			printf("%llu nodes expanded; %llu generated\n", a1.GetNodesExpanded(), a1.GetNodesTouched());
-			printf("Solution path length %lu\n", rubikPath.size());
-			printf("%1.2f elapsed\n", timer.GetElapsedTime());
+			// printf("-=-=-BatchA*-=-=-\n");
+			// CNNHeuristicLookupBuffer buf;
+			// // DelayedHeuristicAStar<RubiksState, RubiksAction, RubiksCube, CNNHeuristicLookupBuffer> a1(1000);
+			// DelayedHeuristicAStar<MNPuzzleState<4, 4>, slideDir, MNPuzzle<4, 4>, CNNHeuristicLookupBuffer> a1(1000);
+			// a1.SetReopenNodes(true);
+			// a1.SetHeuristic(&h);
+			// timer.StartTimer();
+			// // a1.GetPath(&cube, start, goal, rubikPath);
+			// a1.GetPath(&mnp, s, g, stpPath);
+			// timer.EndTimer();
+			// printf("%llu nodes expanded; %llu generated\n", a1.GetNodesExpanded(), a1.GetNodesTouched());
+			// // printf("Solution path length %lu\n", rubikPath.size());
+			// printf("Solution path length %lu\n", stpPath.size());
+			// printf("%1.2f elapsed\n", timer.GetElapsedTime());
 
-			totalTime+=timer.GetElapsedTime();
-			totalExpansion+=a1.GetNodesExpanded();
-			totalGenerated+=a1.GetNodesTouched();
+			// totalTime+=timer.GetElapsedTime();
+			// totalExpansion+=a1.GetNodesExpanded();
+			// totalGenerated+=a1.GetNodesTouched();
 		}
 		else
 			throw invalid_argument( "method does not exist." );
@@ -181,9 +224,8 @@ void Test(string method, int num, int steps)
 	cout<<"****************************************************\n";
 	cout<<"average time: "<<totalTime/num<<'\n';
 	cout<<"average node expansion: "<<totalExpansion/num<<'\n';
-	cout<<"average node generation: "<<totalGenerated/num<<'\n';
+	cout<<"average node generation: "<<totalGenerated/num<<'\n'; 
 
-	
 }
 
 int main(int argc, char *argv[])
