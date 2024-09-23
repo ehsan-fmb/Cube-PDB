@@ -11,12 +11,12 @@ import numpy as np
 from utils.CornerPDB import State
 
 # NN layers
-fc_dim=5000
-num_filters=64
+fc_dim=3000
+num_filters=32
 filter_size=2
-resnet_dim=1000
-resnet_blocks=4
-out_dim=12
+resnet_dim=800
+resnet_blocks=3
+out_dim=8
 
 # training hyperparamters
 test_interval=1e3
@@ -25,8 +25,6 @@ accuracy_decay=0.988
 
 # cpu or gpu
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-
 
 def evaluation(name):
     
@@ -54,17 +52,17 @@ def evaluation(name):
 def convert_model(name):
     
     # load the model
-    model=ResnetModel((3,3),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
-    model.load_state_dict(torch.load("models/"+name+"/"+'model.pth'))
+    model=ResnetModel((4,4),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
+    model.load_state_dict(torch.load("models/"+name+".pth"))
     model.eval()
     
     # Trace the model
-    example_input=get_state(10)
+    # example_input=get_state(10)
+    example_input=np.ones((7,4,4))
     example_input=np.expand_dims(example_input, 0)
     example_input=torch.tensor(example_input,dtype=torch.float32)
     traced_model = torch.jit.trace(model, example_input)
-    traced_model.save("models/"+name+"/"+"model_traced.pt")
-    
+    traced_model.save("models/"+name+".pt")
 
 
 # Initialize the weights using Xavier uniform
@@ -100,6 +98,10 @@ if __name__ == "__main__":
             ,args.pdb_name,int(test_interval),accuracy_threshold,accuracy_decay)
     
     elif args.task=="convert":
+        # initiate the models with xavier uniform weights
+        model=ResnetModel((4,4),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
+        model.apply(initialize_weights)
+        torch.save(model.state_dict(),"models/"+'heavy.pth')
         convert_model(args.pdb_name)
     elif args.task=="test":
         evaluation(args.pdb_name)

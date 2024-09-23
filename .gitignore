@@ -2,4 +2,7 @@
 models/*
 pdbs/*
 *.pyc
-inc/libtorch
+inc/libtorch*
+bin/main
+objs/main.o
+eureka/*

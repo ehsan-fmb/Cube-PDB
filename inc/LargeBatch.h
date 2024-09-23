@@ -7,10 +7,10 @@
 #include <condition_variable>
 #include <torch/script.h> // One-stop header.
 #include <torch/torch.h>
-#include <cuda_runtime.h>
-#include <c10/cuda/CUDAStream.h>
+// #include <cuda_runtime.h>
+// #include <c10/cuda/CUDAStream.h>
 #include <torch/cuda.h>
-#include <c10/cuda/CUDAGuard.h>
+// #include <c10/cuda/CUDAGuard.h>
 #include "MicroTimer.h"
 
 using namespace std;
@@ -23,7 +23,7 @@ const int channels=7;
 const int width=4;
 const int height=4;
 const int classNum=8;
-constexpr int batchWorkDepth=5;
+constexpr int batchWorkDepth=14;
 
 template <class action>
 struct BatchworkUnit {
@@ -42,16 +42,16 @@ struct BatchworkUnit {
 template <class state,class action>
 class LargeBatch {
 public:
-	LargeBatch(int size,int t,int nw,int gpu_core);
+	LargeBatch(int size,int t,int numworks);
 	~LargeBatch();
-	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* fw);
+	void Add(vector<state>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works);
 	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
-	torch::Tensor samples,h_values,gpu_input,narrow_cpu_tensor,gpu_slice,hcost_slice,tmp_slice,samples_test;
+	torch::Tensor samples,h_values,gpu_input,samples_test;
 	torch::TensorOptions options,options_long;
-	at::cuda::CUDAStream stream1,stream2,stream3;
+	// at::cuda::CUDAStream stream1,stream2,stream3;
 	vector<int*> units;
 	vector<BatchworkUnit<action>*> worksInProcess;
-	int mark,workMark,num;
+	int mark,workMark;
 
 private:
 	int maxbatchsize,whichBatch,worksNum,timeout;
@@ -64,18 +64,16 @@ private:
 };
 
 template <class state, class action>
-LargeBatch<state,action>::LargeBatch(int size,int t,int nw,int gpu_core)
+LargeBatch<state,action>::LargeBatch(int size,int t,int nw)
 :maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, channels, width, height})),
-	samplesAccessor(samples.accessor<float,4>()),mark(0),workMark(0),worksNum(nw),receives{true,false},stream1(at::cuda::getStreamFromPool(false,gpu_core)), 
-    stream2(at::cuda::getStreamFromPool(false,gpu_core)), stream3(at::cuda::getStreamFromPool(false,gpu_core)),num(gpu_core),
-	samples_test(torch::zeros({size+lengthEpsilon, channels, width, height})),samplesTestAccessor(samples_test.accessor<float,4>())
-
+	samplesAccessor(samples.accessor<float,4>()),mark(0),workMark(0),worksNum(nw),receives{true,false},
+	samples_test(torch::zeros({size+lengthEpsilon, channels, width, height})), samplesTestAccessor(samples_test.accessor<float,4>())
 {	
 	units.resize((size+lengthEpsilon)*2);
 	worksInProcess.resize(nw*2);
 
-	options = torch::TensorOptions().device(devices[gpu_core]).dtype(torch::kFloat32);
-    options_long = torch::TensorOptions().device(devices[gpu_core]).dtype(torch::kInt64);
+	options = torch::TensorOptions().device(devices[1]).dtype(torch::kFloat32);
+    options_long = torch::TensorOptions().device(devices[1]).dtype(torch::kInt64);
 	
 	gpu_input = torch::empty({size+lengthEpsilon, channels,width,height}, options);
 	h_values = torch::empty({size+lengthEpsilon}, options_long);
@@ -83,6 +81,7 @@ LargeBatch<state,action>::LargeBatch(int size,int t,int nw,int gpu_core)
 	samples=samples.to(at::kHalf);
 	gpu_input=gpu_input.to(at::kHalf);
 
+	// at::cuda::CUDAGuard device_guard(1);
 }
 
 template <class state, class action>
@@ -91,7 +90,7 @@ LargeBatch<state,action>::~LargeBatch()
 }
 
 template <class state, class action>
-void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* fw)
+void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works)
 {
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait(l, [this](){return (receives[0] || receives[1]) ;});
@@ -110,7 +109,6 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		units[unitsIndex+mark+i]=indexes[i];
 
 		// edit samples with new states
-
 		for(int val=1; val<=7; val++) {
 		int idx = state_new[val];
 		samplesTestAccessor[mark+i][val-1][idx/4][idx%4] = 1;
@@ -120,14 +118,16 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		int idx = state_new[val];
 		samplesTestAccessor[mark+i][val-8][idx/4][idx%4] = 1;
 		}
-
 	}
 
-	worksInProcess[worksIndex+workMark]=fw;
-	fw->processing=true;
+	for(unsigned int i = 0; i < works.size(); i++)
+	{
+		worksInProcess[worksIndex+workMark+i]=works[i];
+		works[i]->processing=true;
+	}
 	
 	mark=mark+indexes.size();
-	workMark=workMark+1;
+	workMark=workMark+works.size();
 
     if(mark>=maxbatchsize)
     {	
@@ -152,7 +152,7 @@ bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& 
 		uStart=whichBatch*(maxbatchsize+lengthEpsilon);
 		wLength=workMark;
 		uLength=mark;
-
+		
 		mark=0;
 		workMark=0;
 		whichBatch=(whichBatch+1)%2;

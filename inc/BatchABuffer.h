@@ -9,10 +9,11 @@ void load_cnn() {
   at::globalContext().setBenchmarkCuDNN(true);
   try {
     
-    module_cnn_1_7 = torch::jit::load("../models/cnn1-7c.pt", BatchAdevice);
-    module_cnn_1_7_comp  =torch::jit::load("../models/complement1-7q1c.pt", BatchAdevice);
-    module_cnn_8_15 = torch::jit::load("../models/cnn8-15c.pt", BatchAdevice);
-    module_cnn_8_15_comp  =torch::jit::load("../models/complement8-15c.pt", BatchAdevice);
+    // module_cnn_1_7 = torch::jit::load("../models/cnn1-7c.pt", BatchAdevice);
+    module_cnn_1_7 = torch::jit::load("../models/heavy.pt", BatchAdevice);
+    // module_cnn_1_7_comp  =torch::jit::load("../models/complement1-7q1c.pt", BatchAdevice);
+    // module_cnn_8_15 = torch::jit::load("../models/cnn8-15c.pt", BatchAdevice);
+    // module_cnn_8_15_comp  =torch::jit::load("../models/complement8-15c.pt", BatchAdevice);
   }
   catch (const c10::Error& e) {
     cerr << "error loading the model\n";

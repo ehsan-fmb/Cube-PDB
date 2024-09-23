@@ -68,7 +68,7 @@ class ResnetModel(nn.Module):
         self.out_dim=out_dim
         
         # one convolutional layer
-        self.conv1=nn.Conv2d(in_channels=36,out_channels=self.output_channels,kernel_size=kernel_size,stride=1)
+        self.conv1=nn.Conv2d(in_channels=7,out_channels=self.output_channels,kernel_size=kernel_size,stride=1)
         self.convbn=nn.BatchNorm2d(self.output_channels)
         
         height=(state_dim[0]-kernel_size)+1
