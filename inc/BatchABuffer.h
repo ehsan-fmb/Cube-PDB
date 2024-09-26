@@ -9,11 +9,10 @@ void load_cnn() {
   at::globalContext().setBenchmarkCuDNN(true);
   try {
     
-    // module_cnn_1_7 = torch::jit::load("../models/cnn1-7c.pt", BatchAdevice);
-    module_cnn_1_7 = torch::jit::load("../models/heavy.pt", BatchAdevice);
-    // module_cnn_1_7_comp  =torch::jit::load("../models/complement1-7q1c.pt", BatchAdevice);
-    // module_cnn_8_15 = torch::jit::load("../models/cnn8-15c.pt", BatchAdevice);
-    // module_cnn_8_15_comp  =torch::jit::load("../models/complement8-15c.pt", BatchAdevice);
+    module_cnn_1_7 = torch::jit::load("../models/cnn1-7c.pt", BatchAdevice);
+    module_cnn_1_7_comp  =torch::jit::load("../models/complement1-7q1c.pt", BatchAdevice);
+    module_cnn_8_15 = torch::jit::load("../models/cnn8-15c.pt", BatchAdevice);
+    module_cnn_8_15_comp  =torch::jit::load("../models/complement8-15c.pt", BatchAdevice);
   }
   catch (const c10::Error& e) {
     cerr << "error loading the model\n";
@@ -79,9 +78,15 @@ public:
       tensor_8_15_a[index][val-8][idx/4][idx%4] = 1;
     }
 
+    // for (int j=0; j<16; j++) {
+    //   cout<<puzzleState.puzzle[j]<<" ";
+    // }
+    // cout<<"*********************************"<<endl;
+
+
     
-    // results[index] = env->HCost(puzzleState);
-    results[index]=0;
+    results[index] = env->HCost(puzzleState);
+    // results[index]=0;
     index++;
 	}
 	
@@ -89,18 +94,18 @@ public:
 	{
 
     tensor_1_7_cuda = tensor_1_7.to(BatchAdevice);
-    // tensor_8_15_cuda = tensor_8_15.to(BatchAdevice); 
+    tensor_8_15_cuda = tensor_8_15.to(BatchAdevice); 
     get_heuristic_from_cnn_ens(tensor_1_7_cuda, module_cnn_1_7, 0, h_value_1_7);
-    // get_heuristic_from_cnn_ens(tensor_1_7_cuda, module_cnn_1_7_comp, 0, complement_1_7);
-    // get_heuristic_from_cnn_ens(tensor_8_15_cuda, module_cnn_8_15, 1, h_value_8_15);
-    // get_heuristic_from_cnn_ens(tensor_8_15_cuda, module_cnn_8_15_comp, 1, complement_8_15);
+    get_heuristic_from_cnn_ens(tensor_1_7_cuda, module_cnn_1_7_comp, 0, complement_1_7);
+    get_heuristic_from_cnn_ens(tensor_8_15_cuda, module_cnn_8_15, 1, h_value_8_15);
+    get_heuristic_from_cnn_ens(tensor_8_15_cuda, module_cnn_8_15_comp, 1, complement_8_15);
 
 
     // t.StartTimer();
     // temp1 = heuristic_compliments.to(torch::kCPU);
     // temp2 = heuristic_values.to(torch::kCPU);
-    // get_admissible_heuristics(complement_1_7, h_value_1_7, index, res_1_7);
-    // get_admissible_heuristics(complement_8_15, h_value_8_15, index, res_8_15);
+    get_admissible_heuristics(complement_1_7, h_value_1_7, index, res_1_7);
+    get_admissible_heuristics(complement_8_15, h_value_8_15, index, res_8_15);
     // get_admissible_heuristics(complement_1_7, h_value_1_7, index, res_1_7);
     // get_admissible_heuristics(complement_8_15, h_value_8_15, index, res_8_15);
     // t.EndTimer();
@@ -109,10 +114,16 @@ public:
     // t0.EndTimer();
     // total_eval_time += t0.GetElapsedTime();
 
+    // for (int i=0; i<index; i++) {
+    //   cout<<"heuristic 1: "<<res_1_7[i]<<endl;
+    //   cout<<"heuristic 2: "<<res_8_15[i]<<endl;
+    //   cout<<"*******************************"<<endl;
+    // }  
+
     results.resize(index);
     for (int i=0; i<index; i++) {
-      // results[i] += (res_1_7[i] + res_8_15[i]);
-      results[i]+=1;
+      results[i] += (res_1_7[i] + res_8_15[i]);
+      // results[i]+=1;
     }
     
     index = 0;

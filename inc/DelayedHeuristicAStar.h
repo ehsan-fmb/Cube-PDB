@@ -271,8 +271,8 @@ bool DelayedHeuristicAStar<state,action,environment,batchHeuristic,openList>::In
 	currentCostLimit = 0;
 	delayedStates.resize(0);
 	
-	batch.Reset(testenv, testgoal, batchLookupSize);
-	// batch.Reset(_env, to, batchLookupSize);
+	// batch.Reset(testenv, testgoal, batchLookupSize);
+	batch.Reset(_env, to, batchLookupSize);
 
 	if (env->GoalTest(from, to) && (stopAfterGoal)) //assumes that from and to are valid states
 	{
@@ -406,9 +406,9 @@ bool DelayedHeuristicAStar<state,action,environment,batchHeuristic,openList>::Do
 						env->GetStateHash(neighbors[x]),
 						openClosedList.Lookup(nodeid).g+edgeCosts[x],
 						nodeid});
-					// batch.Add(neighbors[x]);
+					batch.Add(neighbors[x]);
 					// cout<<"to"<<endl;
-					batch.Add(teststate);
+					// batch.Add(teststate);
 					// cout<<"ali"<<endl;
 					if (batch.HitNodeLimit()) {
 						// std::cout << "batch queue is full\n";
@@ -431,7 +431,7 @@ void DelayedHeuristicAStar<state,action,environment,batchHeuristic,openList>::Ha
 	for (int x = 0; x < delayedStates.size(); x++)
 	{
 		double h = vec.at(x);
-		h=theHeuristic->HCost(delayedStates[x].s, goal);
+		// h=theHeuristic->HCost(delayedStates[x].s, goal);
 		openClosedList.AddOpenNode(delayedStates[x].s,
 								   delayedStates[x].hash,
 								   phi(h, delayedStates[x].g),
