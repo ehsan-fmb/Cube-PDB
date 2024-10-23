@@ -11,16 +11,16 @@ import numpy as np
 from utils.CornerPDB import State
 
 # NN layers
-fc_dim=3000
-num_filters=32
+fc_dim=1500
+num_filters=64
 filter_size=2
-resnet_dim=800
-resnet_blocks=3
-out_dim=8
+resnet_dim=300
+resnet_blocks=2
+out_dim=12
 
 # training hyperparamters
-test_interval=1e3
-accuracy_threshold=0.001
+test_interval=1000
+accuracy_threshold=0.0005
 accuracy_decay=0.988
 
 # cpu or gpu
@@ -30,15 +30,18 @@ def evaluation(name):
     
     # load the model
     model=ResnetModel((3,3),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
-    model.load_state_dict(torch.load("models/"+name+"/"+'model.pth'))
+    model.load_state_dict(torch.load("models/"+name+"/"+'model.pth',weights_only=True))
     model.to(device)
+   
+    # half precision
+    model.half()
 
     # load the dataset
     dataset=readPDB(name)
     print("dataset is loaded.")
 
     criterion =CustomLoss(1,model.out_dim)
-    overestimation,sum=test(model,dataset,criterion,chunk_num=2000)
+    overestimation_rate,overestimation,sum=test(model,dataset,criterion,chunk_num=2000)
     
     with open("models/"+name+"/"+'info.txt', 'a') as file:
         file.write("*"*100+"\n")
@@ -46,23 +49,22 @@ def evaluation(name):
         file.write("Final info by using whole dataset as test set:"+"\n")
         file.write("average heuristic: "+str(sum)+"\n")
         file.write("overestimated states: "+str(overestimation)+"\n")
-        file.write("overestimation rate: "+str(overestimation/len(dataset))+"\n")
+        file.write("overestimation rate: "+str(overestimation_rate)+"\n")
 
 
 def convert_model(name):
     
     # load the model
-    model=ResnetModel((4,4),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
-    model.load_state_dict(torch.load("models/"+name+".pth"))
+    model=ResnetModel((3,3),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
+    model.load_state_dict(torch.load("models/"+name+"/"+'model.pth',weights_only=True))
     model.eval()
-    
+
     # Trace the model
-    # example_input=get_state(10)
-    example_input=np.ones((7,4,4))
+    example_input=get_state(10)
     example_input=np.expand_dims(example_input, 0)
     example_input=torch.tensor(example_input,dtype=torch.float32)
     traced_model = torch.jit.trace(model, example_input)
-    traced_model.save("models/"+name+".pt")
+    traced_model.save("models/"+name+"/"+"model_traced.pt")
 
 
 # Initialize the weights using Xavier uniform
@@ -98,10 +100,6 @@ if __name__ == "__main__":
             ,args.pdb_name,int(test_interval),accuracy_threshold,accuracy_decay)
     
     elif args.task=="convert":
-        # initiate the models with xavier uniform weights
-        model=ResnetModel((4,4),num_filters,filter_size,fc_dim,resnet_dim,resnet_blocks,out_dim,True)
-        model.apply(initialize_weights)
-        torch.save(model.state_dict(),"models/"+'heavy.pth')
         convert_model(args.pdb_name)
     elif args.task=="test":
         evaluation(args.pdb_name)

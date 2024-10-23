@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import sys
 
 # cpu or gpu
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -31,13 +32,15 @@ class CustomLoss(nn.Module):
         
         # Convert targets to one-hot encoding and get the probs for classess with a stable softmax function
         probs = self.stable_softmax(outputs)        
-        
+
         # get higher log-probs than true prob
         true_probs=probs[torch.arange(probs.size(0)), targets]
         true_expanded = true_probs.unsqueeze(1).expand(-1, probs.size(1))
-        mask = probs > true_expanded
-        higher_probs=1-probs*mask
+        mask =torch.max(torch.tensor(0),probs - true_expanded) 
+        higher_probs=(1-probs)
         higher__log_probs=torch.log(torch.clamp(higher_probs,min=self.epsilon))
+        higher__log_probs=higher__log_probs*mask
+
 
         # make all values zero before the true class
         mask = torch.arange(higher__log_probs.size(1)).unsqueeze(0).to(device=device) > targets.unsqueeze(1)
@@ -55,7 +58,6 @@ class CustomLoss(nn.Module):
         
         return loss
 
-
 class ResnetModel(nn.Module):
     def __init__(self, state_dim: int, output_channels: int, kernel_size:int  , h1_dim: int, resnet_dim: int, num_resnet_blocks: int,
                  out_dim: int, batch_norm: bool):
@@ -68,7 +70,7 @@ class ResnetModel(nn.Module):
         self.out_dim=out_dim
         
         # one convolutional layer
-        self.conv1=nn.Conv2d(in_channels=7,out_channels=self.output_channels,kernel_size=kernel_size,stride=1)
+        self.conv1=nn.Conv2d(in_channels=36,out_channels=self.output_channels,kernel_size=kernel_size,stride=1)
         self.convbn=nn.BatchNorm2d(self.output_channels)
         
         height=(state_dim[0]-kernel_size)+1
