@@ -44,10 +44,10 @@ class LargeBatch {
 public:
 	LargeBatch(int size,int t,int nw,int gpu_core);
 	~LargeBatch();
-	void Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* fw);
+	void Add(vector<state>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works);
 	bool IsFull(int& wStart,int& uStart,int& wLength,int& uLength);
 	int GetFaceColor(int face,state& s);
-	torch::Tensor samples,h_values,gpu_input,narrow_cpu_tensor,gpu_slice,hcost_slice,tmp_slice,samples_second;
+	torch::Tensor samples,h_values,gpu_input,narrow_cpu_tensor,gpu_slice,hcost_slice,tmp_slice,samples_test;
 	torch::TensorOptions options,options_long;
 	at::cuda::CUDAStream stream1,stream2,stream3;
 	vector<int*> units;
@@ -59,20 +59,16 @@ private:
 	vector<bool> receives;
 	mutable std::mutex lock;
 	mutable std::condition_variable Full;
-	torch::TensorAccessor<at::Half, 4> samplesAccessor,samplesSecondAccessor;
+	torch::TensorAccessor<float, 4> samplesAccessor,samplesTestAccessor;
 	MicroTimer timer;
 };
 
 template <class state, class action>
 LargeBatch<state,action>::LargeBatch(int size,int t,int nw,int gpu_core)
-:maxbatchsize(size),timeout(t),
-	samples(torch::zeros({size+lengthEpsilon, channels, width, height},torch::dtype(at::kHalf))),
-	samplesAccessor(samples.accessor<at::Half,4>()),
-	samples_second(torch::zeros({size+lengthEpsilon, channels, width, height},torch::dtype(at::kHalf))),
-	samplesSecondAccessor(samples_second.accessor<at::Half,4>()),
-	mark(0),workMark(0),worksNum(nw),receives{true,false},stream1(at::cuda::getStreamFromPool(false,gpu_core)), 
-    stream2(at::cuda::getStreamFromPool(false,gpu_core)), stream3(at::cuda::getStreamFromPool(false,gpu_core)),num(gpu_core)
-
+:maxbatchsize(size),timeout(t),samples(torch::zeros({size+lengthEpsilon, channels, width, height})),
+	samplesAccessor(samples.accessor<float,4>()),mark(0),workMark(0),worksNum(nw),receives{true,false},stream1(at::cuda::getStreamFromPool(false,gpu_core)), 
+    stream2(at::cuda::getStreamFromPool(false,gpu_core)), stream3(at::cuda::getStreamFromPool(false,gpu_core)),num(gpu_core),
+	samples_test(torch::zeros({size+lengthEpsilon, channels, width, height})),samplesTestAccessor(samples_test.accessor<float,4>())
 {	
 	units.resize((size+lengthEpsilon)*2);
 	worksInProcess.resize(nw*2);
@@ -86,6 +82,7 @@ LargeBatch<state,action>::LargeBatch(int size,int t,int nw,int gpu_core)
 	samples=samples.to(at::kHalf);
 	gpu_input=gpu_input.to(at::kHalf);
 
+	at::cuda::CUDAGuard device_guard(1);
 }
 
 template <class state, class action>
@@ -94,7 +91,7 @@ LargeBatch<state,action>::~LargeBatch()
 }
 
 template <class state, class action>
-void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, BatchworkUnit<action>* fw)
+void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& indexes, vector<BatchworkUnit<action>*>& works)
 {
 	std::unique_lock<std::mutex> l(lock);
 	Full.wait(l, [this](){return (receives[0] || receives[1]) ;});
@@ -103,15 +100,6 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		whichBatch=0;
 	else
 		whichBatch=1;
-	
-
-	if(mark==0)
-	{
-		if(whichBatch==0)
-			at::fill_(samples, 0);
-		else
-			at::fill_(samples_second, 0);
-	}
 
 	int unitsIndex=whichBatch*(maxbatchsize+lengthEpsilon);
 	int worksIndex=whichBatch*worksNum;
@@ -122,153 +110,82 @@ void LargeBatch<state,action>::Add(vector<state>& cubestates, vector<int*>& inde
 		units[unitsIndex+mark+k]=indexes[k];
 
 		// edit samples with new states
-		if(whichBatch==0)
+		for(int i = 0; i < 6; i++)
 		{
-			for(int i = 0; i < 6; i++)
-			{
-				samplesAccessor[mark+k][7*i][1][1]=1;
-      			samplesAccessor[mark+k][7*i][0][1]=1;
-				samplesAccessor[mark+k][7*i][1][0]=1;
-				samplesAccessor[mark+k][7*i][1][2]=1;
-				samplesAccessor[mark+k][7*i][2][1]=1;
-			}
-
-			// color corner cubies
-			for(int i = 0; i < 8; i++)
-			{
-				if(i==0)
-				{
-					samplesAccessor[mark+k][GetFaceColor(0,cubestates[k])][2][0]=1;
-					samplesAccessor[mark+k][12+GetFaceColor(2,cubestates[k])][0][0]=1;
-					samplesAccessor[mark+k][24+GetFaceColor(1,cubestates[k])][0][2]=1;
-				}
-				else if(i==1)
-				{
-					samplesAccessor[mark+k][GetFaceColor(3,cubestates[k])][2][2]=1;
-					samplesAccessor[mark+k][12+GetFaceColor(4,cubestates[k])][0][2]=1;
-					samplesAccessor[mark+k][30+GetFaceColor(5,cubestates[k])][0][0]=1;
-				}
-				else if(i==2)
-				{
-					samplesAccessor[mark+k][GetFaceColor(6,cubestates[k])][0][2]=1;
-					samplesAccessor[mark+k][30+GetFaceColor(7,cubestates[k])][0][2]=1;
-					samplesAccessor[mark+k][18+GetFaceColor(8,cubestates[k])][0][0]=1;
-
-				}
-				else if(i==3)
-				{
-					samplesAccessor[mark+k][GetFaceColor(9,cubestates[k])][0][0]=1;
-					samplesAccessor[mark+k][24+GetFaceColor(11,cubestates[k])][0][0]=1;
-					samplesAccessor[mark+k][18+GetFaceColor(10,cubestates[k])][0][2]=1;
-					
-				}
-				else if(i==4)
-				{
-					samplesAccessor[mark+k][6+GetFaceColor(12,cubestates[k])][0][0]=1;
-					samplesAccessor[mark+k][12+GetFaceColor(13,cubestates[k])][2][0]=1;
-					samplesAccessor[mark+k][24+GetFaceColor(14,cubestates[k])][2][2]=1;
-					
-				}
-				else if(i==5)
-				{
-					samplesAccessor[mark+k][6+GetFaceColor(15,cubestates[k])][0][2]=1;
-					samplesAccessor[mark+k][12+GetFaceColor(17,cubestates[k])][2][2]=1;
-					samplesAccessor[mark+k][30+GetFaceColor(16,cubestates[k])][2][0]=1;
-					
-				}
-				else if(i==6)
-				{
-					samplesAccessor[mark+k][6+GetFaceColor(18,cubestates[k])][2][2]=1;
-					samplesAccessor[mark+k][30+GetFaceColor(20,cubestates[k])][2][2]=1;
-					samplesAccessor[mark+k][18+GetFaceColor(19,cubestates[k])][2][0]=1;
-					
-				}
-				else
-				{
-					samplesAccessor[mark+k][6+GetFaceColor(21,cubestates[k])][2][0]=1;
-					samplesAccessor[mark+k][24+GetFaceColor(22,cubestates[k])][2][0]=1;
-					samplesAccessor[mark+k][18+GetFaceColor(23,cubestates[k])][2][2]=1;			
-				}
-			}
-
-		}
-		else
-		{
-			for(int i = 0; i < 6; i++)
-			{
-				samplesSecondAccessor[mark+k][7*i][1][1]=1;
-      			samplesSecondAccessor[mark+k][7*i][0][1]=1;
-				samplesSecondAccessor[mark+k][7*i][1][0]=1;
-				samplesSecondAccessor[mark+k][7*i][1][2]=1;
-				samplesSecondAccessor[mark+k][7*i][2][1]=1;
-			}
-
-			// color corner cubies
-			for(int i = 0; i < 8; i++)
-			{
-				if(i==0)
-				{
-					samplesSecondAccessor[mark+k][GetFaceColor(0,cubestates[k])][2][0]=1;
-					samplesSecondAccessor[mark+k][12+GetFaceColor(2,cubestates[k])][0][0]=1;
-					samplesSecondAccessor[mark+k][24+GetFaceColor(1,cubestates[k])][0][2]=1;
-				}
-				else if(i==1)
-				{
-					samplesSecondAccessor[mark+k][GetFaceColor(3,cubestates[k])][2][2]=1;
-					samplesSecondAccessor[mark+k][12+GetFaceColor(4,cubestates[k])][0][2]=1;
-					samplesSecondAccessor[mark+k][30+GetFaceColor(5,cubestates[k])][0][0]=1;
-				}
-				else if(i==2)
-				{
-					samplesSecondAccessor[mark+k][GetFaceColor(6,cubestates[k])][0][2]=1;
-					samplesSecondAccessor[mark+k][30+GetFaceColor(7,cubestates[k])][0][2]=1;
-					samplesSecondAccessor[mark+k][18+GetFaceColor(8,cubestates[k])][0][0]=1;
-
-				}
-				else if(i==3)
-				{
-					samplesSecondAccessor[mark+k][GetFaceColor(9,cubestates[k])][0][0]=1;
-					samplesSecondAccessor[mark+k][24+GetFaceColor(11,cubestates[k])][0][0]=1;
-					samplesSecondAccessor[mark+k][18+GetFaceColor(10,cubestates[k])][0][2]=1;
-					
-				}
-				else if(i==4)
-				{
-					samplesSecondAccessor[mark+k][6+GetFaceColor(12,cubestates[k])][0][0]=1;
-					samplesSecondAccessor[mark+k][12+GetFaceColor(13,cubestates[k])][2][0]=1;
-					samplesSecondAccessor[mark+k][24+GetFaceColor(14,cubestates[k])][2][2]=1;
-					
-				}
-				else if(i==5)
-				{
-					samplesSecondAccessor[mark+k][6+GetFaceColor(15,cubestates[k])][0][2]=1;
-					samplesSecondAccessor[mark+k][12+GetFaceColor(17,cubestates[k])][2][2]=1;
-					samplesSecondAccessor[mark+k][30+GetFaceColor(16,cubestates[k])][2][0]=1;
-					
-				}
-				else if(i==6)
-				{
-					samplesSecondAccessor[mark+k][6+GetFaceColor(18,cubestates[k])][2][2]=1;
-					samplesSecondAccessor[mark+k][30+GetFaceColor(20,cubestates[k])][2][2]=1;
-					samplesSecondAccessor[mark+k][18+GetFaceColor(19,cubestates[k])][2][0]=1;
-					
-				}
-				else
-				{
-					samplesSecondAccessor[mark+k][6+GetFaceColor(21,cubestates[k])][2][0]=1;
-					samplesSecondAccessor[mark+k][24+GetFaceColor(22,cubestates[k])][2][0]=1;
-					samplesSecondAccessor[mark+k][18+GetFaceColor(23,cubestates[k])][2][2]=1;			
-				}
-			}
+			samplesTestAccessor[mark+k][7*i][1][1]=1;
+			samplesTestAccessor[mark+k][7*i][0][1]=1;
+			samplesTestAccessor[mark+k][7*i][1][0]=1;
+			samplesTestAccessor[mark+k][7*i][1][2]=1;
+			samplesTestAccessor[mark+k][7*i][2][1]=1;
 		}
 
+		// color corner cubies
+		for(int i = 0; i < 8; i++)
+		{
+			if(i==0)
+			{
+				samplesTestAccessor[mark+k][GetFaceColor(0,cubestates[k])][2][0]=1;
+				samplesTestAccessor[mark+k][12+GetFaceColor(2,cubestates[k])][0][0]=1;
+				samplesTestAccessor[mark+k][24+GetFaceColor(1,cubestates[k])][0][2]=1;
+			}
+			else if(i==1)
+			{
+				samplesTestAccessor[mark+k][GetFaceColor(3,cubestates[k])][2][2]=1;
+				samplesTestAccessor[mark+k][12+GetFaceColor(4,cubestates[k])][0][2]=1;
+				samplesTestAccessor[mark+k][30+GetFaceColor(5,cubestates[k])][0][0]=1;
+			}
+			else if(i==2)
+			{
+				samplesTestAccessor[mark+k][GetFaceColor(6,cubestates[k])][0][2]=1;
+				samplesTestAccessor[mark+k][30+GetFaceColor(7,cubestates[k])][0][2]=1;
+				samplesTestAccessor[mark+k][18+GetFaceColor(8,cubestates[k])][0][0]=1;
+
+			}
+			else if(i==3)
+			{
+				samplesTestAccessor[mark+k][GetFaceColor(9,cubestates[k])][0][0]=1;
+				samplesTestAccessor[mark+k][24+GetFaceColor(11,cubestates[k])][0][0]=1;
+				samplesTestAccessor[mark+k][18+GetFaceColor(10,cubestates[k])][0][2]=1;
+				
+			}
+			else if(i==4)
+			{
+				samplesTestAccessor[mark+k][6+GetFaceColor(12,cubestates[k])][0][0]=1;
+				samplesTestAccessor[mark+k][12+GetFaceColor(13,cubestates[k])][2][0]=1;
+				samplesTestAccessor[mark+k][24+GetFaceColor(14,cubestates[k])][2][2]=1;
+				
+			}
+			else if(i==5)
+			{
+				samplesTestAccessor[mark+k][6+GetFaceColor(15,cubestates[k])][0][2]=1;
+				samplesTestAccessor[mark+k][12+GetFaceColor(17,cubestates[k])][2][2]=1;
+				samplesTestAccessor[mark+k][30+GetFaceColor(16,cubestates[k])][2][0]=1;
+				
+			}
+			else if(i==6)
+			{
+				samplesTestAccessor[mark+k][6+GetFaceColor(18,cubestates[k])][2][2]=1;
+				samplesTestAccessor[mark+k][30+GetFaceColor(20,cubestates[k])][2][2]=1;
+				samplesTestAccessor[mark+k][18+GetFaceColor(19,cubestates[k])][2][0]=1;
+				
+			}
+			else
+			{
+				samplesTestAccessor[mark+k][6+GetFaceColor(21,cubestates[k])][2][0]=1;
+				samplesTestAccessor[mark+k][24+GetFaceColor(22,cubestates[k])][2][0]=1;
+				samplesTestAccessor[mark+k][18+GetFaceColor(23,cubestates[k])][2][2]=1;			
+			}
+		}
 	}
 
-	worksInProcess[worksIndex+workMark]=fw;
-	fw->processing=true;
+	for(unsigned int i = 0; i < works.size(); i++)
+	{
+		worksInProcess[worksIndex+workMark+i]=works[i];
+		works[i]->processing=true;
+	}
 	
 	mark=mark+indexes.size();
-	workMark=workMark+1;
+	workMark=workMark+works.size();
 
     if(mark>=maxbatchsize)
     {	
@@ -287,13 +204,13 @@ bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& 
 	if(mark>0)
 	{
 		receives[whichBatch]=false;
-		timeout=5;
+		timeout=3;
 
 		wStart=whichBatch*worksNum;
 		uStart=whichBatch*(maxbatchsize+lengthEpsilon);
 		wLength=workMark;
 		uLength=mark;
-
+		
 		mark=0;
 		workMark=0;
 		whichBatch=(whichBatch+1)%2;
@@ -305,7 +222,6 @@ bool LargeBatch<state,action>::IsFull(int& wStart,int& uStart,int& wLength,int& 
 	else
 		return false;
 }
-
 
 template <class state, class action>
 int LargeBatch<state,action>::GetFaceColor(int face,state& s)
